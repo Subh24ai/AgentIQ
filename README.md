@@ -128,3 +128,7 @@ GitHub Actions CI
   (`backend/eval/judge.py`) implements equivalent Faithfulness and Answer-Relevancy metrics
   directly with Claude — fewer dependencies and fully auditable judge prompts.
 - **No multi-tenancy** — all runs share one namespace in Redis and Supabase.
+
+---
+
+Built by [Subhash Gupta](https://linkedin.com/in/subhash24gupta) · [GitHub](https://github.com/Subh24ai/AgentIQ)
