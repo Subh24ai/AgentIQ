@@ -1,5 +1,7 @@
 # AgentIQ
 
+> Autonomous multi-agent B2B outreach: research a company, score ICP fit, draft a personalized email, and self-evaluate it — with human-in-the-loop review before anything is sent.
+
 AgentIQ is an autonomous, multi-agent B2B outreach platform. A LangGraph supervisor
 orchestrates four Claude agents — Researcher → Analyst → Drafter → Evaluator — to
 research a target company, score ICP fit, draft a personalized cold email, and then
