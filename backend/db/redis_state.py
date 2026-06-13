@@ -1,0 +1,121 @@
+"""Redis-backed live run state for SSE streaming and HITL signalling.
+
+Keys (all expire after 24h):
+- ``agentiq:run:{run_id}:status``  -> current node name (string)
+- ``agentiq:run:{run_id}:events``  -> list of JSON-encoded events
+- ``agentiq:run:{run_id}:hitl``    -> JSON HITL interrupt payload (when pending)
+
+Every method is resilient: Redis errors are logged and swallowed so that a
+transient Redis outage never crashes an agent node or a request handler.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+import redis.asyncio as aioredis
+
+from backend.config import get_settings
+
+logger = logging.getLogger("agentiq.redis")
+
+TTL_SECONDS = 24 * 60 * 60
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class RedisStateManager:
+    """Async wrapper over Redis for per-run live state."""
+
+    def __init__(self, url: Optional[str] = None) -> None:
+        self._url = url or get_settings().redis_url
+        self._client: Optional[aioredis.Redis] = None
+
+    def _get_client(self) -> aioredis.Redis:
+        if self._client is None:
+            self._client = aioredis.from_url(self._url, decode_responses=True)
+        return self._client
+
+    @staticmethod
+    def _status_key(run_id: str) -> str:
+        return f"agentiq:run:{run_id}:status"
+
+    @staticmethod
+    def _events_key(run_id: str) -> str:
+        return f"agentiq:run:{run_id}:events"
+
+    @staticmethod
+    def _hitl_key(run_id: str) -> str:
+        return f"agentiq:run:{run_id}:hitl"
+
+    async def set_node_status(self, run_id: str, node_name: str) -> None:
+        try:
+            client = self._get_client()
+            key = self._status_key(run_id)
+            await client.set(key, node_name, ex=TTL_SECONDS)
+        except Exception:
+            logger.warning("redis set_node_status failed for %s", run_id, exc_info=True)
+
+    async def get_node_status(self, run_id: str) -> Optional[str]:
+        try:
+            return await self._get_client().get(self._status_key(run_id))
+        except Exception:
+            logger.warning("redis get_node_status failed for %s", run_id, exc_info=True)
+            return None
+
+    async def append_event(self, run_id: str, event_dict: dict[str, Any]) -> None:
+        try:
+            event = {**event_dict}
+            event.setdefault("timestamp", _now_iso())
+            client = self._get_client()
+            key = self._events_key(run_id)
+            await client.rpush(key, json.dumps(event))
+            await client.expire(key, TTL_SECONDS)
+        except Exception:
+            logger.warning("redis append_event failed for %s", run_id, exc_info=True)
+
+    async def get_events_since(self, run_id: str, offset: int) -> list[dict[str, Any]]:
+        try:
+            raw = await self._get_client().lrange(self._events_key(run_id), offset, -1)
+            return [json.loads(item) for item in raw]
+        except Exception:
+            logger.warning("redis get_events_since failed for %s", run_id, exc_info=True)
+            return []
+
+    async def set_hitl_pending(self, run_id: str, payload: dict[str, Any]) -> None:
+        try:
+            client = self._get_client()
+            await client.set(self._hitl_key(run_id), json.dumps(payload), ex=TTL_SECONDS)
+        except Exception:
+            logger.warning("redis set_hitl_pending failed for %s", run_id, exc_info=True)
+
+    async def get_hitl_pending(self, run_id: str) -> Optional[dict[str, Any]]:
+        try:
+            raw = await self._get_client().get(self._hitl_key(run_id))
+            return json.loads(raw) if raw else None
+        except Exception:
+            logger.warning("redis get_hitl_pending failed for %s", run_id, exc_info=True)
+            return None
+
+    async def clear_hitl(self, run_id: str) -> None:
+        try:
+            await self._get_client().delete(self._hitl_key(run_id))
+        except Exception:
+            logger.warning("redis clear_hitl failed for %s", run_id, exc_info=True)
+
+
+_manager: Optional[RedisStateManager] = None
+
+
+def get_redis_state() -> RedisStateManager:
+    """Return the process-wide RedisStateManager singleton."""
+
+    global _manager
+    if _manager is None:
+        _manager = RedisStateManager()
+    return _manager
