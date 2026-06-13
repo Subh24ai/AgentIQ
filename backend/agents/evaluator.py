@@ -6,7 +6,13 @@ import logging
 
 from pydantic import BaseModel, model_validator
 
-from backend.agents._common import emit_node_event, get_chat_model, run_structured
+from backend.agents._common import (
+    PROMPT_CACHING_HEADER,
+    cached_system,
+    emit_node_event,
+    get_chat_model,
+    run_structured,
+)
 from backend.db.supabase_client import EvalResult, get_supabase_client
 
 logger = logging.getLogger("agentiq.evaluator")
@@ -46,8 +52,10 @@ async def evaluator_node(state: dict) -> dict:
             f"Analyst findings:\n{analysis}\n\n"
             f"Draft email to evaluate:\n{draft}"
         )
-        model = get_chat_model()  # separate instance from the drafter
-        evaluation = await run_structured(model, EvalOutput, _SYSTEM, human, state)
+        # Separate instance from the drafter, with its own cached (adversarial)
+        # system prompt.
+        model = get_chat_model(default_headers=PROMPT_CACHING_HEADER)
+        evaluation = await run_structured(model, EvalOutput, cached_system(_SYSTEM), human, state)
         state["eval_output"] = evaluation.model_dump()
         await emit_node_event(state, "evaluator", "complete", state["eval_output"])
 

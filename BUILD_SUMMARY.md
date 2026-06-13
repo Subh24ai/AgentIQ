@@ -40,7 +40,7 @@ AgentIQ/
 │   │   ├── redis_state.py            # RedisStateManager (resilient) for live state/SSE
 │   │   └── migrations/001_initial.sql
 │   └── eval/
-│       └── judge.py                  # AgentIQEvaluator.run_eval_suite + RAGAS (lazy)
+│       └── judge.py                  # AgentIQEvaluator — native Claude-as-judge eval
 ├── frontend/
 │   ├── Dockerfile                    # two-stage node→nginx
 │   ├── nginx.conf                    # SPA routing + /api proxy (SSE-safe)
@@ -105,7 +105,7 @@ AgentIQ/
 - **`npm run build` → 0 TS errors; dev server boots.**
 
 ## Phase 6 — Eval framework + cost optimizer + CI + Docker + README
-- `backend/eval/judge.py` — `AgentIQEvaluator.run_eval_suite` (`EvalCase`/`EvalCaseResult`/`EvalSuiteResult`), blocks injection pre-eval, RAGAS lazy + 0.0 fallback.
+- `backend/eval/judge.py` — `AgentIQEvaluator.run_eval_suite` (`EvalCase`/`NativeEvalMetrics`/`EvalCaseResult`/`EvalSuiteResult`), native Claude-as-judge faithfulness + answer-relevancy, blocks injection/empty drafts.
 - `tests/eval_fixtures.py` — high-fit / low-fit / injection cases.
 - `backend/config.py` — `CostOptimizer` (`should_use_cache` 5-min LRU, `estimate_cost`, `log_usage`).
 - `.github/workflows/ci.yml`, `backend/Dockerfile`, `frontend/Dockerfile`, `frontend/nginx.conf`, frontend service in compose, full `README.md`.
@@ -117,7 +117,7 @@ AgentIQ/
 1. **Python 3.11** (system 3.9 too old). Run uvicorn/pytest **from project root**; imports are `backend.*`. Correct server cmd: `uvicorn backend.api.main:app` (NOT `cd backend && uvicorn api.main:app`).
 2. **React 19** (Vite's current scaffold default), not 18 — code is compatible.
 3. **`default_headers`** for the prompt-caching beta header (langchain-anthropic has no `extra_headers`). `usage_metadata` keys are `input_tokens`/`output_tokens`.
-4. **RAGAS doesn't run** with these pins — `ragas 0.4.3` imports a vertexai chat model missing from `langchain-community 0.4.2`. Wired in lazily, degrades to 0.0. Fix: `pip install langchain-google-vertexai` or bump langchain-community.
+4. **RAGAS removed, replaced with native Claude-as-judge** — `ragas 0.4.3` can't import with `langchain-community 0.4.2` (removed vertexai submodule). `backend/eval/judge.py` implements equivalent faithfulness + answer-relevancy metrics directly. `ragas` dropped from requirements.
 5. **`pytest-cov`** installed in CI only (not in requirements.txt).
 6. **Your Docker stack occupies ports 8000/5173/6379** — local smoke tests used alt ports (e.g. 8002).
 7. **`docs/architecture.png`** is referenced in README but not generated.

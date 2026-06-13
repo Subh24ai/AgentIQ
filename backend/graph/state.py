@@ -28,7 +28,8 @@ class AgentIQState(TypedDict, total=False):
     hitl_decision: str         # "approved" | "rejected" | "pending"
     hitl_feedback: str         # human's free-text feedback if rejected
     error: str                 # last error message if any agent failed
-    token_usage: dict          # cumulative {prompt_tokens, completion_tokens, cost_usd}
+    token_usage: dict          # cumulative {input_tokens, output_tokens, total_tokens,
+                               #             cache_read_tokens, cache_creation_tokens, cost_usd}
     messages: Annotated[list, operator.add]  # LangGraph message list for tracing
 
 
@@ -66,6 +67,13 @@ def new_state(run_id: str = "", lead: dict | None = None) -> AgentIQState:
         hitl_decision="pending",
         hitl_feedback="",
         error="",
-        token_usage={},
+        token_usage={
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.0,
+        },
         messages=[],
     )

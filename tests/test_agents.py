@@ -141,6 +141,21 @@ async def test_injection_guard_blocks_scraped_content(mocker):
 
 
 @pytest.mark.asyncio
+async def test_drafter_uses_prompt_caching_header(mocker):
+    import langchain_anthropic
+
+    mock_cls = mocker.patch.object(langchain_anthropic, "ChatAnthropic")
+    mocker.patch(
+        "backend.agents.drafter.run_structured",
+        AsyncMock(return_value=DraftOutput(subject="Hi", body="Short body.")),
+    )
+    await drafter_node(_state())
+
+    headers = [c.kwargs.get("default_headers") or {} for c in mock_cls.call_args_list]
+    assert any("anthropic-beta" in h for h in headers), "drafter must set the prompt-caching beta header"
+
+
+@pytest.mark.asyncio
 async def test_cost_guard_routes_to_end_when_limit_exceeded():
     from backend.graph.supervisor import cost_guard_node, route_after_evaluator
 

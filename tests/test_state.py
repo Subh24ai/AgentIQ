@@ -12,10 +12,17 @@ def test_state_has_all_required_fields():
         assert field in AgentIQState.__annotations__
 
 
-def test_token_usage_defaults_to_empty_dict():
+def test_token_usage_defaults_to_zeroed_counters():
     state = new_state()
-    assert state["token_usage"] == {}
-    assert isinstance(state["token_usage"], dict)
+    usage = state["token_usage"]
+    assert isinstance(usage, dict)
+    # Correct UsageMetadata-aligned keys, all zero at the start of a run.
+    assert usage["input_tokens"] == 0
+    assert usage["output_tokens"] == 0
+    assert usage["total_tokens"] == 0
+    assert usage["cache_read_tokens"] == 0
+    assert usage["cache_creation_tokens"] == 0
+    assert usage["cost_usd"] == 0.0
 
 
 def test_hitl_decision_default_is_pending():

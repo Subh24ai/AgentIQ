@@ -15,7 +15,12 @@ interface AgentIQStore {
   resetStore: () => void
 }
 
-const emptyUsage: TokenUsage = { prompt_tokens: 0, completion_tokens: 0, cost_usd: 0 }
+const emptyUsage: TokenUsage = {
+  input_tokens: 0,
+  output_tokens: 0,
+  total_tokens: 0,
+  cost_usd: 0,
+}
 
 export const useStore = create<AgentIQStore>((set) => ({
   currentRunId: null,
@@ -32,8 +37,9 @@ export const useStore = create<AgentIQStore>((set) => ({
       const usage = event.token_usage
       const tokenUsage: TokenUsage = usage
         ? {
-            prompt_tokens: usage.prompt_tokens ?? state.tokenUsage.prompt_tokens,
-            completion_tokens: usage.completion_tokens ?? state.tokenUsage.completion_tokens,
+            input_tokens: usage.input_tokens ?? state.tokenUsage.input_tokens,
+            output_tokens: usage.output_tokens ?? state.tokenUsage.output_tokens,
+            total_tokens: usage.total_tokens ?? state.tokenUsage.total_tokens,
             cost_usd: usage.cost_usd ?? state.tokenUsage.cost_usd,
           }
         : state.tokenUsage

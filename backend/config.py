@@ -96,26 +96,32 @@ class CostOptimizer:
 
         return recent
 
-    def estimate_cost(self, prompt_tokens: int, completion_tokens: int, model: str) -> float:
+    def estimate_cost(
+        self, input_tokens: int, output_tokens: int, model: str, cache_read_tokens: int = 0
+    ) -> float:
         rates = get_settings().cost_per_1k_tokens.get(model, {})
-        cost = (prompt_tokens / 1000.0) * rates.get("input", 0.0) + (
-            completion_tokens / 1000.0
+        cost = (input_tokens / 1000.0) * rates.get("input", 0.0) + (
+            output_tokens / 1000.0
         ) * rates.get("output", 0.0)
+        # Cache reads are charged at 10% of the input price.
+        cost += (cache_read_tokens / 1000.0) * rates.get("input", 0.0) * 0.1
         return round(cost, 6)
 
     def log_usage(self, run_id: str, node: str, usage: dict) -> float:
-        prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
-        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        input_tokens = int(usage.get("input_tokens", 0) or 0)
+        output_tokens = int(usage.get("output_tokens", 0) or 0)
+        cache_read_tokens = int(usage.get("cache_read_tokens", 0) or 0)
         model = usage.get("model", get_settings().default_model)
         cost = usage.get("cost_usd")
         if cost is None:
-            cost = self.estimate_cost(prompt_tokens, completion_tokens, model)
+            cost = self.estimate_cost(input_tokens, output_tokens, model, cache_read_tokens)
         self._usage_log.append(
             {
                 "run_id": run_id,
                 "node": node,
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_read_tokens": cache_read_tokens,
                 "cost_usd": cost,
             }
         )

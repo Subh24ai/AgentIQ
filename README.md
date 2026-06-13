@@ -10,51 +10,27 @@ production patterns for agent orchestration, streaming, evaluation, and LLM secu
 
 Architecture diagram: See `docs/architecture.png`.
 
-## Architecture & workflow
+## Architecture
 
 ```mermaid
-flowchart TD
-    subgraph Browser["Browser — React + Vite SPA"]
-        UI["Login · Dashboard · Run page<br/>EventFeed · CostBadge · HITLPanel"]
-    end
+graph TD
+    A([User]) -->|company · website · ICP notes| B[Researcher Agent<br/>3× Tavily search · web scrape · injection firewall]
+    B -->|company profile| C[Analyst Agent<br/>ICP fit 0–1 · personalization hooks · red flags]
+    C -->|hooks + tone| D[Drafter Agent<br/>≤200-word email · Anthropic prompt caching]
+    D -->|draft| E[Evaluator Agent<br/>adversarial LLM-as-judge]
 
-    subgraph API["FastAPI Backend (:8000)"]
-        MW["Middleware<br/>security headers · rate limit · CORS · JSON logs"]
-        AUTH["JWT Auth<br/>/auth/token · verify_token · require_role"]
-        RT["Routes<br/>POST /runs · GET /runs/{id}/stream (SSE)<br/>POST /runs/{id}/hitl · GET /runs"]
-    end
+    E -->|quality check| GATE{Eval gate<br/>score ≥ 0.75?}
+    GATE -->|pass| CG[Cost Guard<br/>abort if cost_usd > 0.50]
+    CG -->|within budget| RES([Ticket resolved<br/>email sent · SSE complete])
 
-    subgraph Graph["LangGraph Supervisor · MemorySaver"]
-        direction TB
-        R["Researcher<br/>3× Tavily + scrape"] --> A["Analyst<br/>ICP fit 0–1"]
-        A --> D["Drafter<br/>≤200w + prompt cache"]
-        D --> E{"Evaluator<br/>score ≥ 0.75?"}
-        E -- "pass" --> CG["Cost Guard"]
-        CG --> ENDN(["END / send"])
-        E -- "fail" --> HITL["HITL · interrupt()"]
-        HITL -- "approved · Command(resume)" --> D
-        HITL -- "rejected" --> ENDN
-    end
+    GATE -->|fail| HITL{HITL gate<br/>LangGraph interrupt}
+    HITL -->|approved · Command resume| D
+    HITL -->|rejected| STOP([Run ended<br/>no email sent])
 
-    REDIS[("Redis<br/>live events · HITL pending")]
-    SUPA[("Supabase<br/>runs · outreach · hitl · evals")]
-    EXT["Anthropic Claude · Tavily · Gmail (mock)"]
-    FW>"PromptInjectionGuard<br/>OWASP LLM01/02"]
-
-    UI -- "JWT / REST" --> RT
-    REDIS -. "SSE stream" .-> UI
-    RT -- "run_pipeline (background)" --> R
-    UI -- "review decision" --> HITL
-
-    Graph -. "emit events" .-> REDIS
-    Graph -. "persist" .-> SUPA
-    Graph -. "LLM / search / send" .-> EXT
-    FW -. "scans input + scraped content" .-> R
-
-    classDef store fill:#0d2538,stroke:#58a6ff,color:#cfe6ff;
-    classDef guard fill:#2a0f0f,stroke:#f85149,color:#ffd6d3;
-    class REDIS,SUPA store;
-    class FW guard;
+    B -.->|emit events| REDIS([Redis<br/>live status · SSE stream])
+    E -.->|persist runs · evals| SUPA([Supabase<br/>audit trail])
+    D -.->|Claude · Tavily · Gmail| EXT([External services])
+    REDIS -.->|SSE| UI([Browser<br/>React · live pipeline + HITL panel])
 ```
 
 ## Stack
@@ -68,7 +44,7 @@ flowchart TD
 | Validation | Pydantic | 2.13.4 |
 | Persistence | Supabase (Postgres) | 2.31.0 |
 | Live state / streaming | Redis | 8.0.0 |
-| Eval metrics | RAGAS | 0.4.3 |
+| Eval metrics | native Claude-as-judge (faithfulness + relevancy) | — |
 | Auth | python-jose (JWT HS256) | 3.4.0 |
 | Frontend | React + Vite + TypeScript | 19 / Vite 8 |
 | Frontend state | Zustand | 5.x |
@@ -132,7 +108,7 @@ service and dummy env vars on every push / PR to `main`.
 ## Skills demonstrated
 
 LangGraph 1.2.5 multi-agent orchestration · HITL interrupt/resume with Redis ·
-LLM-as-judge evaluation · RAGAS eval metrics · Prompt injection firewall
+LLM-as-judge evaluation · native faithfulness + answer-relevancy eval metrics · Prompt injection firewall
 (OWASP LLM01/02) · Pydantic v2 structured outputs · Prompt caching (Anthropic beta) ·
 SSE streaming · JWT auth · FastAPI 0.136.x · Supabase · Docker Compose ·
 GitHub Actions CI
@@ -146,9 +122,9 @@ GitHub Actions CI
   shared across workers. Replace with a Redis-backed limiter for production.
 - **Gmail integration is mocked** (`USE_MOCK_GMAIL=true`, writes `sent_emails.jsonl`).
   Real sending needs an OAuth 2.1 flow / connected Gmail MCP; never hardcode tokens.
-- **RAGAS is wired in but degrades to 0.0** in this environment: ragas 0.4.3 imports a
-  `langchain_community` vertexai chat model that no longer exists in langchain-community
-  0.4.2, so the import fails. The eval framework imports ragas lazily and falls back
-  gracefully. To enable real RAGAS scoring, install `langchain-google-vertexai` (or bump
-  langchain-community) and provide an LLM + embeddings.
+- **Eval uses a native Claude-as-judge, not RAGAS.** RAGAS 0.4.3 cannot be imported with
+  langchain-community 0.4.2 (it imports a `langchain_community.chat_models.vertexai` module
+  that was removed). Rather than pin around a broken dependency, the eval framework
+  (`backend/eval/judge.py`) implements equivalent Faithfulness and Answer-Relevancy metrics
+  directly with Claude — fewer dependencies and fully auditable judge prompts.
 - **No multi-tenancy** — all runs share one namespace in Redis and Supabase.

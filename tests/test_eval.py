@@ -1,100 +1,96 @@
-"""Phase 6 tests for the standalone eval framework (external calls mocked)."""
+"""Phase 6 tests for the native Claude-as-judge eval framework (LLM calls mocked)."""
 
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from backend.agents.analyst import AnalysisOutput
-from backend.agents.drafter import DraftOutput
-from backend.agents.evaluator import EvalOutput
-from backend.agents.researcher import ResearchOutput
-from backend.eval.judge import AgentIQEvaluator, EvalSuiteResult
-from tests.eval_fixtures import ALL_CASES
+from backend.eval.judge import AgentIQEvaluator
+from tests.eval_fixtures import ALL_CASES, HIGH_FIT, INJECTION, LOW_FIT
 
 
-def _research_se(*args, **_kw):
-    return ResearchOutput(company_summary="profile", tech_stack=["python"])
+def _result(*, research=True, draft="We help your data team scale with our platform.", error="", run_id="r"):
+    """A pipeline_result (AgentIQState-shaped dict) for the judge to score."""
+    return {
+        "run_id": run_id,
+        "research_output": {"company_summary": "Acme builds data tooling"} if research else {},
+        "analysis_output": {"personalization_hooks": ["data team"]},
+        "draft_output": {"subject": "Hi", "body": draft},
+        "eval_output": {},
+        "error": error,
+    }
 
 
-def _analyst_se(*args, **_kw):
-    human = args[3].lower()
-    low = "consumer" in human
-    return AnalysisOutput(
-        fit_score=0.2 if low else 0.9,
-        fit_reasoning="weak consumer fit" if low else "strong data fit",
+def _mock_judge(evaluator, faithfulness: float, relevancy: float):
+    """Mock the evaluator's LLM so both judge calls return controlled JSON."""
+    msg = MagicMock()
+    msg.content = json.dumps(
+        {"faithfulness": faithfulness, "answer_relevancy": relevancy, "reasoning": "because"}
     )
+    evaluator.llm = MagicMock()
+    evaluator.llm.ainvoke = AsyncMock(return_value=msg)
 
 
-def _drafter_se(*args, **_kw):
-    human = args[3].lower()
-    low = "consumer" in human
-    body = "Generic outreach note." if low else "We can help your data team scale."
-    return DraftOutput(subject="Hi", body=body)
-
-
-def _evaluator_se(*args, **_kw):
-    human = args[3].lower()
-    return EvalOutput(score=0.9 if "data" in human else 0.4, feedback="judged")
-
-
-async def _run_suite(mocker) -> EvalSuiteResult:
-    # Mock researcher tooling
-    tv = mocker.patch("backend.agents.researcher.TavilySearchTool")
-    tv.return_value.search = AsyncMock(return_value=[])
-    sc = mocker.patch("backend.agents.researcher.PlaywrightScraper")
-    sc.return_value.scrape = AsyncMock(return_value="")
-    for mod in ("researcher", "analyst", "drafter", "evaluator"):
-        mocker.patch(f"backend.agents.{mod}.get_chat_model", return_value=MagicMock())
-    mocker.patch("backend.agents.researcher.run_structured", AsyncMock(side_effect=_research_se))
-    mocker.patch("backend.agents.analyst.run_structured", AsyncMock(side_effect=_analyst_se))
-    mocker.patch("backend.agents.drafter.run_structured", AsyncMock(side_effect=_drafter_se))
-    mocker.patch("backend.agents.evaluator.run_structured", AsyncMock(side_effect=_evaluator_se))
+def _mock_supabase(mocker):
     sb = MagicMock()
     sb.log_eval_result = AsyncMock(return_value={})
-    mocker.patch("backend.agents.evaluator.get_supabase_client", return_value=sb)
-
-    return await AgentIQEvaluator().run_eval_suite(ALL_CASES)
+    mocker.patch("backend.eval.judge.get_supabase_client", return_value=sb)
 
 
 @pytest.mark.asyncio
 async def test_eval_suite_runs_all_cases(mocker):
-    result = await _run_suite(mocker)
+    _mock_supabase(mocker)
+    mocker.patch("backend.graph.supervisor.run_pipeline", AsyncMock(return_value=_result()))
+    evaluator = AgentIQEvaluator()
+    _mock_judge(evaluator, 0.9, 0.9)
+    result = await evaluator.run_eval_suite(ALL_CASES)
     assert result.total == 3
     assert len(result.cases) == 3
 
 
 @pytest.mark.asyncio
 async def test_high_fit_case_passes(mocker):
-    result = await _run_suite(mocker)
-    high = result.cases[0]
-    assert high.company_name.startswith("Northwind")
-    assert high.passed is True
-    assert high.fit_score >= 0.7
+    _mock_supabase(mocker)
+    evaluator = AgentIQEvaluator()
+    _mock_judge(evaluator, 0.85, 0.80)
+    res = await evaluator.evaluate_case(HIGH_FIT, _result())
+    assert res.passed is True
 
 
 @pytest.mark.asyncio
-async def test_low_fit_case_fails_or_scores_low(mocker):
-    result = await _run_suite(mocker)
-    low = result.cases[1]
-    assert low.passed is False or low.fit_score < 0.5
+async def test_low_fit_case_scores_low(mocker):
+    _mock_supabase(mocker)
+    evaluator = AgentIQEvaluator()
+    _mock_judge(evaluator, 0.4, 0.3)
+    res = await evaluator.evaluate_case(LOW_FIT, _result())
+    assert res.passed is False
 
 
 @pytest.mark.asyncio
-async def test_injection_case_is_blocked_before_eval(mocker):
-    result = await _run_suite(mocker)
-    injection = result.cases[2]
-    assert injection.blocked is True
+async def test_injection_case_returns_error_or_low_score(mocker):
+    _mock_supabase(mocker)
+    evaluator = AgentIQEvaluator()
+    _mock_judge(evaluator, 0.9, 0.9)  # high mock, but blocked path must override
+    # Injection lead -> pipeline blocked it: empty research / no draft.
+    res = await evaluator.evaluate_case(INJECTION, _result(research=False, draft=""))
+    assert res.metrics.faithfulness < 0.5 or res.error != ""
 
 
 @pytest.mark.asyncio
-async def test_ragas_faithfulness_score_is_float(mocker):
-    result = await _run_suite(mocker)
-    assert isinstance(result.cases[0].faithfulness, float)
-    assert isinstance(result.cases[0].answer_relevancy, float)
+async def test_faithfulness_score_is_between_0_and_1(mocker):
+    _mock_supabase(mocker)
+    evaluator = AgentIQEvaluator()
+    _mock_judge(evaluator, 0.75, 0.75)
+    res = await evaluator.evaluate_case(HIGH_FIT, _result())
+    assert 0.0 <= res.metrics.faithfulness <= 1.0
+    assert res.metrics.faithfulness > 0  # non-vacuous: 0.0 would be a hidden failure
 
 
 @pytest.mark.asyncio
-async def test_eval_suite_result_counts_match_cases(mocker):
-    result = await _run_suite(mocker)
-    assert result.total == len(ALL_CASES)
-    assert result.passed + result.failed == result.total
+async def test_relevancy_score_is_between_0_and_1(mocker):
+    _mock_supabase(mocker)
+    evaluator = AgentIQEvaluator()
+    _mock_judge(evaluator, 0.75, 0.75)
+    res = await evaluator.evaluate_case(HIGH_FIT, _result())
+    assert 0.0 <= res.metrics.answer_relevancy <= 1.0
+    assert res.metrics.answer_relevancy > 0  # non-vacuous

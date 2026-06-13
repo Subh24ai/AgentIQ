@@ -11,11 +11,16 @@ import re
 
 from pydantic import BaseModel, field_validator
 
-from backend.agents._common import emit_node_event, get_chat_model, run_structured
+from backend.agents._common import (
+    PROMPT_CACHING_HEADER,
+    cached_system,
+    emit_node_event,
+    get_chat_model,
+    run_structured,
+)
 
 logger = logging.getLogger("agentiq.drafter")
 
-PROMPT_CACHING_HEADER = {"anthropic-beta": "prompt-caching-2024-07-31"}
 MAX_WORDS = 200
 
 _SYSTEM = (
@@ -67,7 +72,9 @@ async def drafter_node(state: dict) -> dict:
             f"Incorporate feedback if present:\n{state.get('hitl_feedback', '')}"
         )
         model = get_chat_model(default_headers=PROMPT_CACHING_HEADER)
-        draft = await run_structured(model, DraftOutput, _SYSTEM, human, state)
+        # Pass the system prompt as a cache_control content block so Anthropic
+        # caches this stable prefix across drafter calls.
+        draft = await run_structured(model, DraftOutput, cached_system(_SYSTEM), human, state)
         state["draft_output"] = draft.model_dump()
         await emit_node_event(state, "drafter", "complete", state["draft_output"])
     except Exception as exc:

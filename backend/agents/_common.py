@@ -17,6 +17,20 @@ from backend.db.redis_state import get_redis_state
 T = TypeVar("T", bound=BaseModel)
 
 
+PROMPT_CACHING_HEADER = {"anthropic-beta": "prompt-caching-2024-07-31"}
+
+
+def cached_system(text: str) -> list[dict]:
+    """Build a system-message content block marked for Anthropic prompt caching.
+
+    The beta header (see :data:`PROMPT_CACHING_HEADER`) enables the feature; the
+    ``cache_control`` block tells Anthropic *which* prefix to cache so a long,
+    stable system prompt is cached on first use and reused (~90% token savings).
+    """
+
+    return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
+
+
 def get_chat_model(
     model: Optional[str] = None,
     default_headers: Optional[dict[str, str]] = None,
@@ -44,26 +58,36 @@ def get_chat_model(
 
 
 def accumulate_usage(state: dict, usage_metadata: Optional[dict]) -> None:
-    """Fold a response's usage_metadata into cumulative ``state['token_usage']``.
+    """Fold a response's ``usage_metadata`` into cumulative ``state['token_usage']``.
 
-    langchain usage_metadata uses ``input_tokens``/``output_tokens``; we map
-    those to ``prompt_tokens``/``completion_tokens`` and add the USD cost.
+    Uses the real ``UsageMetadata`` keys (``input_tokens``/``output_tokens``/
+    ``total_tokens`` and nested ``input_token_details`` for cache hits) — these
+    are the keys langchain-anthropic actually returns. Cache reads are billed at
+    ~10% of the input rate.
     """
 
     if not usage_metadata:
         return
     settings = get_settings()
-    prompt = int(usage_metadata.get("input_tokens", 0) or 0)
-    completion = int(usage_metadata.get("output_tokens", 0) or 0)
+    input_tok = int(usage_metadata.get("input_tokens", 0) or 0)
+    output_tok = int(usage_metadata.get("output_tokens", 0) or 0)
+    details = usage_metadata.get("input_token_details") or {}
+    cache_read = int(details.get("cache_read", 0) or 0)
+    cache_creation = int(details.get("cache_creation", 0) or 0)
 
     rates = settings.cost_per_1k_tokens.get(settings.default_model, {})
-    cost = (prompt / 1000.0) * rates.get("input", 0.0) + (
-        completion / 1000.0
+    cost = (input_tok / 1000.0) * rates.get("input", 0.0) + (
+        output_tok / 1000.0
     ) * rates.get("output", 0.0)
+    # Cache reads are charged at 10% of the input price.
+    cost += (cache_read / 1000.0) * rates.get("input", 0.0) * 0.1
 
     usage = state.get("token_usage") or {}
-    usage["prompt_tokens"] = usage.get("prompt_tokens", 0) + prompt
-    usage["completion_tokens"] = usage.get("completion_tokens", 0) + completion
+    usage["input_tokens"] = usage.get("input_tokens", 0) + input_tok
+    usage["output_tokens"] = usage.get("output_tokens", 0) + output_tok
+    usage["cache_read_tokens"] = usage.get("cache_read_tokens", 0) + cache_read
+    usage["cache_creation_tokens"] = usage.get("cache_creation_tokens", 0) + cache_creation
+    usage["total_tokens"] = usage.get("total_tokens", 0) + input_tok + output_tok
     usage["cost_usd"] = round(usage.get("cost_usd", 0.0) + cost, 6)
     state["token_usage"] = usage
 
@@ -93,7 +117,7 @@ async def emit_node_event(
 async def run_structured(
     model,
     schema: Type[T],
-    system: str,
+    system: "str | list[dict]",
     human: str,
     state: dict,
 ) -> T:
