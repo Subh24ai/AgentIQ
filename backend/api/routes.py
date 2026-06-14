@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from datetime import datetime
 from typing import Any, Literal
@@ -168,41 +169,57 @@ async def stream_run(
     rs = get_redis_state()
 
     async def event_generator():
+        start = time.time()
         offset = 0
         hitl_round = 0
-        elapsed = 0.0
-        while elapsed < MAX_STREAM_SECONDS:
-            events = await rs.get_events_since(run_id, offset)
-            for event in events:
-                offset += 1
-                if event.get("node") == RUN_COMPLETE_NODE:
-                    yield _sse(
-                        "complete",
-                        {"run_id": run_id, "final_state": event.get("partial_output", {})},
-                    )
-                    return
-                yield _sse("update", event)
+        try:
+            while time.time() - start < MAX_STREAM_SECONDS:
+                events = await rs.get_events_since(run_id, offset)
+                for event in events:
+                    offset += 1
+                    if event.get("node") == RUN_COMPLETE_NODE:
+                        yield _sse(
+                            "complete",
+                            {"run_id": run_id, "final_state": event.get("partial_output", {})},
+                        )
+                        return
+                    yield _sse("update", event)
 
-            # The revision loop can interrupt multiple times. The round counter
-            # advances on every interrupt, so re-emit hitl_required for each new
-            # round (not just the first). Only advance our local round once the
-            # payload is actually present, to avoid racing the counter bump.
-            current_round = await rs.get_hitl_round(run_id)
-            if current_round > hitl_round:
-                hitl = await rs.get_hitl_pending(run_id)
-                if hitl:
-                    yield _sse(
-                        "hitl_required",
-                        {
-                            "run_id": run_id,
-                            "draft": hitl.get("draft", {}),
-                            "eval_feedback": hitl.get("eval_feedback", ""),
-                        },
-                    )
-                    hitl_round = current_round
+                # The revision loop can interrupt multiple times. The round
+                # counter advances on every interrupt, so re-emit hitl_required
+                # for each new round (not just the first). Only advance our local
+                # round once the payload is present, to avoid racing the bump.
+                current_round = await rs.get_hitl_round(run_id)
+                if current_round > hitl_round:
+                    hitl = await rs.get_hitl_pending(run_id)
+                    if hitl:
+                        yield _sse(
+                            "hitl_required",
+                            {
+                                "run_id": run_id,
+                                "draft": hitl.get("draft", {}),
+                                "eval_feedback": hitl.get("eval_feedback", ""),
+                            },
+                        )
+                        hitl_round = current_round
 
-            await asyncio.sleep(POLL_INTERVAL_SECONDS)
-            elapsed += POLL_INTERVAL_SECONDS
+                await asyncio.sleep(POLL_INTERVAL_SECONDS)
+            # Hit the safety cap without a terminal event.
+            yield _sse("timeout", {"run_id": run_id})
+        except asyncio.CancelledError:
+            # Client disconnected. Re-raise so FastAPI closes the response cleanly.
+            logger.info(json.dumps({"event": "sse_client_disconnected", "run_id": run_id}))
+            raise
+        finally:
+            logger.info(
+                json.dumps(
+                    {
+                        "event": "sse_generator_closed",
+                        "run_id": run_id,
+                        "elapsed_s": round(time.time() - start, 1),
+                    }
+                )
+            )
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
