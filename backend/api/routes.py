@@ -79,6 +79,7 @@ async def _publish_terminal(run_id: str, result: Any) -> None:
                 "analysis_output": result.get("analysis_output", {}),
                 "draft_output": result.get("draft_output", {}),
                 "eval_output": result.get("eval_output", {}),
+                "send_result": result.get("send_result", {}),
                 "error": result.get("error", ""),
             },
             "token_usage": token_usage,
@@ -163,7 +164,7 @@ async def stream_run(run_id: str, claims: dict = Depends(_stream_auth)) -> Strea
 
     async def event_generator():
         offset = 0
-        hitl_sent = False
+        hitl_round = 0
         elapsed = 0.0
         while elapsed < MAX_STREAM_SECONDS:
             events = await rs.get_events_since(run_id, offset)
@@ -177,7 +178,12 @@ async def stream_run(run_id: str, claims: dict = Depends(_stream_auth)) -> Strea
                     return
                 yield _sse("update", event)
 
-            if not hitl_sent:
+            # The revision loop can interrupt multiple times. The round counter
+            # advances on every interrupt, so re-emit hitl_required for each new
+            # round (not just the first). Only advance our local round once the
+            # payload is actually present, to avoid racing the counter bump.
+            current_round = await rs.get_hitl_round(run_id)
+            if current_round > hitl_round:
                 hitl = await rs.get_hitl_pending(run_id)
                 if hitl:
                     yield _sse(
@@ -188,7 +194,7 @@ async def stream_run(run_id: str, claims: dict = Depends(_stream_auth)) -> Strea
                             "eval_feedback": hitl.get("eval_feedback", ""),
                         },
                     )
-                    hitl_sent = True
+                    hitl_round = current_round
 
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
             elapsed += POLL_INTERVAL_SECONDS

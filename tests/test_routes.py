@@ -100,6 +100,61 @@ async def test_stream_endpoint_returns_event_stream_content_type(mocker):
 
 
 @pytest.mark.asyncio
+async def test_second_hitl_round_is_streamed_to_client(mocker):
+    """The revision loop interrupts more than once; each round must be streamed."""
+    _fake_supabase(mocker)
+    from backend.api.routes import RUN_COMPLETE_NODE
+
+    fake_rs = MagicMock()
+    # Two empty event polls (so the HITL check runs twice), then a terminal event.
+    fake_rs.get_events_since = AsyncMock(
+        side_effect=[
+            [],
+            [],
+            [{"node": RUN_COMPLETE_NODE, "status": "complete", "partial_output": {}}],
+        ]
+    )
+    # Round counter advances 1 -> 2 across the two polls (new interrupt each time).
+    fake_rs.get_hitl_round = AsyncMock(side_effect=[1, 2, 2])
+    fake_rs.get_hitl_pending = AsyncMock(
+        return_value={"draft": {"subject": "s"}, "eval_feedback": "needs work"}
+    )
+    mocker.patch("backend.api.routes.get_redis_state", return_value=fake_rs)
+    # Don't actually wait between polls.
+    mocker.patch("backend.api.routes.asyncio.sleep", AsyncMock())
+
+    token = create_access_token({"sub": "admin", "role": "admin"})
+    async with _client() as c:
+        async with c.stream("GET", f"/runs/round-test/stream?token={token}") as resp:
+            assert resp.status_code == 200
+            body = (await resp.aread()).decode()
+
+    assert body.count("event: hitl_required") == 2
+    assert "event: complete" in body
+
+
+@pytest.mark.asyncio
+async def test_hitl_round_increments_in_hitl_node(mocker):
+    """The hitl node must bump the round counter before interrupting."""
+    from backend.graph import supervisor
+
+    fake_rs = MagicMock()
+    fake_rs.increment_hitl_round = AsyncMock(return_value=1)
+    mocker.patch("backend.graph.supervisor.get_redis_state", return_value=fake_rs)
+    # Stand in for LangGraph's interrupt() so the node runs to completion.
+    mocker.patch(
+        "backend.graph.supervisor.interrupt",
+        return_value={"decision": "approved", "feedback": ""},
+    )
+
+    state = {"run_id": "node-round", "draft_output": {}, "eval_output": {}}
+    out = await supervisor.hitl_node(state)
+
+    fake_rs.increment_hitl_round.assert_awaited_once_with("node-round")
+    assert out["hitl_decision"] == "approved"
+
+
+@pytest.mark.asyncio
 async def test_runs_list_is_paginated(mocker):
     fake = _fake_supabase(mocker, list_runs=[{"id": "a"}])
     async with _client() as c:

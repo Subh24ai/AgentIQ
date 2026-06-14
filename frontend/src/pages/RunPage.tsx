@@ -61,6 +61,7 @@ export default function RunPage(): JSX.Element {
   const draft = finalState?.draft_output
   const evalOut = finalState?.eval_output
   const analysis = finalState?.analysis_output
+  const sent = finalState?.send_result?.recipient ? finalState.send_result : null
 
   return (
     <div className="page">
@@ -131,6 +132,15 @@ export default function RunPage(): JSX.Element {
                     <span className="summary-label">Total cost</span>
                     <span className="summary-value">~${tokenUsage.cost_usd.toFixed(4)}</span>
                   </div>
+                  {sent && (
+                    <div>
+                      <span className="summary-label">Email sent</span>
+                      <span className="summary-value">
+                        {sent.recipient}
+                        {sent.sent_at ? ` · ${new Date(sent.sent_at).toLocaleString()}` : ''}
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

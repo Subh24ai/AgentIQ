@@ -33,6 +33,13 @@ export interface AnalysisOutput {
   red_flags?: string[]
 }
 
+export interface SendResult {
+  message_id: string
+  thread_id: string
+  sent_at: string
+  recipient: string
+}
+
 export interface AgentIQState {
   run_id: string
   lead: Record<string, unknown>
@@ -42,6 +49,7 @@ export interface AgentIQState {
   eval_output: Partial<EvalOutput>
   hitl_decision: string
   hitl_feedback: string
+  send_result: SendResult | null
   error: string
   token_usage: Partial<TokenUsage>
 }
@@ -76,6 +84,7 @@ export interface CompletePayload {
     analysis_output?: Partial<AnalysisOutput>
     draft_output?: Partial<DraftOutput>
     eval_output?: Partial<EvalOutput>
+    send_result?: SendResult | null
     error?: string
   }
 }

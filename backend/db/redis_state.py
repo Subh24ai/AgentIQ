@@ -1,9 +1,10 @@
 """Redis-backed live run state for SSE streaming and HITL signalling.
 
 Keys (all expire after 24h):
-- ``agentiq:run:{run_id}:status``  -> current node name (string)
-- ``agentiq:run:{run_id}:events``  -> list of JSON-encoded events
-- ``agentiq:run:{run_id}:hitl``    -> JSON HITL interrupt payload (when pending)
+- ``agentiq:run:{run_id}:status``      -> current node name (string)
+- ``agentiq:run:{run_id}:events``      -> list of JSON-encoded events
+- ``agentiq:run:{run_id}:hitl``        -> JSON HITL interrupt payload (when pending)
+- ``agentiq:run:{run_id}:hitl_round``  -> monotonic counter of HITL rounds (INCR)
 
 Every method is resilient: Redis errors are logged and swallowed so that a
 transient Redis outage never crashes an agent node or a request handler.
@@ -52,6 +53,10 @@ class RedisStateManager:
     @staticmethod
     def _hitl_key(run_id: str) -> str:
         return f"agentiq:run:{run_id}:hitl"
+
+    @staticmethod
+    def _hitl_round_key(run_id: str) -> str:
+        return f"agentiq:run:{run_id}:hitl_round"
 
     async def set_node_status(self, run_id: str, node_name: str) -> None:
         try:
@@ -107,6 +112,34 @@ class RedisStateManager:
             await self._get_client().delete(self._hitl_key(run_id))
         except Exception:
             logger.warning("redis clear_hitl failed for %s", run_id, exc_info=True)
+
+    async def increment_hitl_round(self, run_id: str) -> int:
+        """Atomically bump the HITL round counter and (re)apply its 24h TTL.
+
+        Returns the new round number (0 on a Redis failure). The counter is the
+        signal the SSE generator uses to detect a *new* interrupt in the
+        revision loop, not just the first one.
+        """
+
+        try:
+            client = self._get_client()
+            key = self._hitl_round_key(run_id)
+            value = await client.incr(key)
+            await client.expire(key, TTL_SECONDS)
+            return int(value)
+        except Exception:
+            logger.warning("redis increment_hitl_round failed for %s", run_id, exc_info=True)
+            return 0
+
+    async def get_hitl_round(self, run_id: str) -> int:
+        """Return the current HITL round counter (0 if never set)."""
+
+        try:
+            raw = await self._get_client().get(self._hitl_round_key(run_id))
+            return int(raw) if raw else 0
+        except Exception:
+            logger.warning("redis get_hitl_round failed for %s", run_id, exc_info=True)
+            return 0
 
 
 _manager: Optional[RedisStateManager] = None

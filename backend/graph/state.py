@@ -27,6 +27,7 @@ class AgentIQState(TypedDict, total=False):
     eval_output: dict          # populated by Evaluator agent; score, feedback
     hitl_decision: str         # "approved" | "rejected" | "pending"
     hitl_feedback: str         # human's free-text feedback if rejected
+    send_result: dict          # populated by gmail_send_node; {} if not sent
     error: str                 # last error message if any agent failed
     token_usage: dict          # cumulative {input_tokens, output_tokens, total_tokens,
                                #             cache_read_tokens, cache_creation_tokens, cost_usd}
@@ -43,6 +44,7 @@ REQUIRED_FIELDS: tuple[str, ...] = (
     "eval_output",
     "hitl_decision",
     "hitl_feedback",
+    "send_result",
     "error",
     "token_usage",
     "messages",
@@ -66,6 +68,7 @@ def new_state(run_id: str = "", lead: dict | None = None) -> AgentIQState:
         eval_output={},
         hitl_decision="pending",
         hitl_feedback="",
+        send_result={},
         error="",
         token_usage={
             "input_tokens": 0,

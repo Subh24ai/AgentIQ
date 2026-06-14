@@ -19,7 +19,7 @@ export default function HITLPanel({ payload, runId, token, onResolved }: Props):
 
   async function decide(decision: 'approved' | 'rejected'): Promise<void> {
     if (decision === 'rejected' && notes.trim() === '') {
-      setError('Reviewer notes are required when rejecting.')
+      setError('Revision notes are required when requesting a revision.')
       return
     }
     setError('')
@@ -64,13 +64,13 @@ export default function HITLPanel({ payload, runId, token, onResolved }: Props):
       </div>
 
       <div className="hitl-field">
-        <span className="hitl-label">Reviewer notes (required to reject)</span>
+        <span className="hitl-label">Revision notes (required)</span>
         <textarea
           className="hitl-notes"
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           rows={3}
-          placeholder="Why are you approving / rejecting?"
+          placeholder="What should change before sending? (required to request a revision)"
         />
       </div>
 
@@ -83,7 +83,7 @@ export default function HITLPanel({ payload, runId, token, onResolved }: Props):
             Approve &amp; Send
           </button>
           <button className="btn btn-danger" disabled={busy} onClick={() => decide('rejected')}>
-            Reject with feedback
+            Request Revision
           </button>
         </div>
       )}
