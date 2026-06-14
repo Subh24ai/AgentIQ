@@ -221,6 +221,7 @@ async def test_hitl_round_increments_in_hitl_node(mocker):
 
     fake_rs = MagicMock()
     fake_rs.increment_hitl_round = AsyncMock(return_value=1)
+    fake_rs.clear_hitl = AsyncMock(return_value=None)
     mocker.patch("backend.graph.supervisor.get_redis_state", return_value=fake_rs)
     # Stand in for LangGraph's interrupt() so the node runs to completion.
     mocker.patch(

@@ -106,6 +106,10 @@ async def hitl_node(state: dict) -> dict:
             "run_id": state.get("run_id", ""),
         }
     )
+    # Clear the pending payload immediately on resume so the SSE generator
+    # cannot observe a stale HITL payload during resume re-execution and emit a
+    # spurious hitl_required event.
+    await get_redis_state().clear_hitl(state.get("run_id", ""))
     # `decision` is the value passed to Command(resume=...).
     state["hitl_decision"] = decision.get("decision", "pending")
     state["hitl_feedback"] = decision.get("feedback", "")
