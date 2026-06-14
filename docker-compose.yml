@@ -5,6 +5,12 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
 
   backend:
     # Build context is the project root so the `backend` package (and
@@ -18,7 +24,8 @@ services:
     env_file:
       - .env
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     command: python -m uvicorn backend.api.main:app --host 0.0.0.0 --port 8000 --reload
 
   frontend:

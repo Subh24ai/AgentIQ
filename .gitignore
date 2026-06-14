@@ -8,3 +8,5 @@ node_modules/
 frontend/dist/
 .coverage
 htmlcov/
+*.egg-info/
+.DS_Store
