@@ -7,22 +7,19 @@ import json
 import logging
 import uuid
 from datetime import datetime
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from fastapi import (
     APIRouter,
     BackgroundTasks,
     Depends,
-    Header,
     HTTPException,
     Query,
     status,
 )
-from jose import JWTError, jwt
 from pydantic import BaseModel, HttpUrl
 from starlette.responses import StreamingResponse
 
-from backend.config import get_settings
 from backend.db.redis_state import get_redis_state
 from backend.db.supabase_client import (
     HITLReview,
@@ -30,7 +27,7 @@ from backend.db.supabase_client import (
     RunStatusUpdate,
     get_supabase_client,
 )
-from backend.security.auth import ALGORITHM, require_role, verify_token
+from backend.security.auth import require_role, verify_token
 from backend.security.injection_guard import PromptInjectionGuard
 
 logger = logging.getLogger("agentiq.routes")
@@ -157,29 +154,17 @@ async def create_run(
 
 
 def _sse(event: str, data: dict[str, Any]) -> str:
-    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
-
-
-async def _stream_auth(
-    token: Optional[str] = Query(default=None),
-    authorization: Optional[str] = Header(default=None),
-) -> dict:
-    """Auth for the SSE endpoint: accept token via query param (EventSource can't
-    set headers) or via the Authorization bearer header."""
-
-    raw = token
-    if not raw and authorization and authorization.lower().startswith("bearer "):
-        raw = authorization.split(" ", 1)[1]
-    if not raw:
-        raise HTTPException(status_code=401, detail="Missing token")
-    try:
-        return jwt.decode(raw, get_settings().jwt_secret, algorithms=[ALGORITHM])
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    # The `event:` line keeps the stream valid SSE; the `data:` line carries a
+    # self-describing {event, data} object so a fetch()/ReadableStream client can
+    # dispatch without relying on the EventSource event-type parsing.
+    payload = json.dumps({"event": event, "data": data})
+    return f"event: {event}\ndata: {payload}\n\n"
 
 
 @router.get("/runs/{run_id}/stream")
-async def stream_run(run_id: str, claims: dict = Depends(_stream_auth)) -> StreamingResponse:
+async def stream_run(
+    run_id: str, current_user: dict = Depends(verify_token)
+) -> StreamingResponse:
     rs = get_redis_state()
 
     async def event_generator():

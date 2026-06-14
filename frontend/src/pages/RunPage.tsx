@@ -28,7 +28,7 @@ function stepStatus(node: string, events: AgentEvent[]): StepStatus {
 export default function RunPage(): JSX.Element {
   const { runId = '' } = useParams()
   const navigate = useNavigate()
-  const esRef = useRef<EventSource | null>(null)
+  const cleanupRef = useRef<() => void>(() => {})
 
   const { agentEvents, hitlPayload, finalState, tokenUsage } = useStore()
   const { resetStore, setRunId, appendEvent, setHITL, setFinal } = useStore()
@@ -42,11 +42,15 @@ export default function RunPage(): JSX.Element {
     }
     resetStore()
     setRunId(runId)
-    const es = streamRun(runId, token, appendEvent, setHITL, setFinal)
-    esRef.current = es
+    cleanupRef.current = streamRun(
+      runId,
+      token,
+      appendEvent,
+      setHITL,
+      (finalState) => setFinal({ run_id: runId, final_state: finalState }),
+    )
     return () => {
-      es.close()
-      esRef.current = null
+      cleanupRef.current()
     }
     // Re-open only when the run id changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps

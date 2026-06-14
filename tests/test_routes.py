@@ -91,8 +91,40 @@ async def test_stream_endpoint_returns_event_stream_content_type(mocker):
         run_id, {"node": RUN_COMPLETE_NODE, "status": "complete", "partial_output": {}}
     )
     token = create_access_token({"sub": "admin", "role": "admin"})
+    headers = {"Authorization": f"Bearer {token}"}
     async with _client() as c:
-        async with c.stream("GET", f"/runs/{run_id}/stream?token={token}") as resp:
+        async with c.stream("GET", f"/runs/{run_id}/stream", headers=headers) as resp:
+            assert resp.status_code == 200
+            assert resp.headers["content-type"].startswith("text/event-stream")
+            body = await resp.aread()
+    assert "event: complete" in body.decode()
+
+
+@pytest.mark.asyncio
+async def test_stream_endpoint_requires_bearer_not_query_param(mocker):
+    """SSE auth is bearer-header only now; the ?token= query param is rejected."""
+    _fake_supabase(mocker)
+    from backend.api.routes import RUN_COMPLETE_NODE
+    from backend.db.redis_state import get_redis_state
+
+    run_id = "bearer-stream"
+    token = create_access_token({"sub": "admin", "role": "admin"})
+
+    # Query param alone (no Authorization header) is no longer accepted.
+    async with _client() as c:
+        r = await c.get(f"/runs/{run_id}/stream?token={token}")
+    assert r.status_code == 401
+
+    # Bearer header authenticates; seed a terminal event so it returns promptly.
+    await get_redis_state().append_event(
+        run_id, {"node": RUN_COMPLETE_NODE, "status": "complete", "partial_output": {}}
+    )
+    async with _client() as c:
+        async with c.stream(
+            "GET",
+            f"/runs/{run_id}/stream",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as resp:
             assert resp.status_code == 200
             assert resp.headers["content-type"].startswith("text/event-stream")
             body = await resp.aread()
@@ -170,7 +202,11 @@ async def test_second_hitl_round_is_streamed_to_client(mocker):
 
     token = create_access_token({"sub": "admin", "role": "admin"})
     async with _client() as c:
-        async with c.stream("GET", f"/runs/round-test/stream?token={token}") as resp:
+        async with c.stream(
+            "GET",
+            "/runs/round-test/stream",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as resp:
             assert resp.status_code == 200
             body = (await resp.aread()).decode()
 

@@ -41,27 +41,64 @@ export async function createRun(lead: Lead, token: string): Promise<{ run_id: st
 }
 
 /**
- * Open an SSE stream for a run. EventSource cannot set headers, so the JWT is
- * passed as a query param (the backend stream endpoint accepts ?token=).
- * Returns the EventSource so the caller can close() it.
+ * Open an SSE stream for a run using fetch() + ReadableStream so the JWT can be
+ * sent in the Authorization header (EventSource cannot set headers). Each SSE
+ * message's `data:` line is a JSON object of the form {event, data}.
+ * Returns a cleanup function that aborts the stream.
  */
 export function streamRun(
   runId: string,
   token: string,
   onEvent: (e: AgentEvent) => void,
   onHITL: (p: HITLPayload) => void,
-  onComplete: (p: CompletePayload) => void,
-): EventSource {
-  const es = new EventSource(`${API}/runs/${runId}/stream?token=${encodeURIComponent(token)}`)
+  onComplete: (s: CompletePayload['final_state']) => void,
+  onError?: (err: Error) => void,
+): () => void {
+  const controller = new AbortController()
 
-  es.addEventListener('update', (ev) => onEvent(JSON.parse((ev as MessageEvent).data)))
-  es.addEventListener('hitl_required', (ev) => onHITL(JSON.parse((ev as MessageEvent).data)))
-  es.addEventListener('complete', (ev) => {
-    onComplete(JSON.parse((ev as MessageEvent).data))
-    es.close()
-  })
+  ;(async () => {
+    try {
+      const res = await fetch(`${API}/runs/${runId}/stream`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
+      })
+      if (!res.ok) throw new Error(`Stream ${res.status}`)
+      if (!res.body) throw new Error('No response body')
 
-  return es
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? '' // keep incomplete line in buffer
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const parsed = JSON.parse(line.slice(6))
+            if (parsed.event === 'update') onEvent(parsed.data)
+            else if (parsed.event === 'hitl_required') onHITL(parsed.data)
+            else if (parsed.event === 'complete') {
+              onComplete(parsed.data.final_state)
+              return
+            }
+          } catch {
+            /* malformed line — skip */
+          }
+        }
+      }
+    } catch (err) {
+      if ((err as Error).name !== 'AbortError') {
+        onError?.(err as Error)
+      }
+    }
+  })()
+
+  return () => controller.abort() // cleanup function
 }
 
 export async function submitHITL(
