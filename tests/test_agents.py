@@ -46,6 +46,39 @@ async def test_researcher_node_handles_tavily_error_gracefully(mocker):
     assert state["research_output"] == {}
 
 
+@pytest.mark.asyncio
+async def test_researcher_handles_partial_tavily_failure(mocker):
+    # Query 0 fails; queries 1 and 2 succeed -> proceed with partial results.
+    def _search(q, *args, **kwargs):
+        if "overview funding" in q:
+            raise RuntimeError("query 0 down")
+        return [{"title": "t", "url": "u", "content": "c", "score": 0.9}]
+
+    tavily = mocker.patch("backend.agents.researcher.TavilySearchTool")
+    tavily.return_value.search = AsyncMock(side_effect=_search)
+    scraper = mocker.patch("backend.agents.researcher.PlaywrightScraper")
+    scraper.return_value.scrape = AsyncMock(return_value="")
+    mocker.patch("backend.agents.researcher.get_chat_model", return_value=MagicMock())
+    mocker.patch(
+        "backend.agents.researcher.run_structured",
+        AsyncMock(return_value=ResearchOutput(company_summary="partial ok")),
+    )
+
+    state = await researcher_node(_state())
+    assert state["error"] == ""
+    assert state["research_output"]["company_summary"] == "partial ok"
+
+
+@pytest.mark.asyncio
+async def test_researcher_sets_error_only_when_all_searches_fail(mocker):
+    tavily = mocker.patch("backend.agents.researcher.TavilySearchTool")
+    tavily.return_value.search = AsyncMock(side_effect=RuntimeError("all down"))
+
+    state = await researcher_node(_state())
+    assert "researcher failed" in state["error"]
+    assert state["research_output"] == {}
+
+
 # --- analyst ----------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_analyst_node_clamps_fit_score_below_zero(mocker):

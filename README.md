@@ -77,7 +77,7 @@ cd frontend && npm install && npm run dev       # http://localhost:5173
 ## Running tests
 
 ```bash
-pytest --tb=short -v        # 61 tests; all external services are mocked
+pytest --tb=short -v        # 63 tests; all external services are mocked
 ```
 
 CI (`.github/workflows/ci.yml`) runs the full suite on Python 3.11 with a Redis
@@ -102,10 +102,11 @@ service and dummy env vars on every push / PR to `main`.
 ## The agents
 
 - **Researcher** — runs three parallel Tavily searches and scrapes the company website,
-  then synthesizes a structured company profile. Implements exponential backoff on search
-  failures. All external text is firewalled against prompt injection before it reaches the
-  prompt: search results carrying injection signatures are redacted and scraped content is
-  blocked (POST /runs also rejects injected user input up front).
+  then synthesizes a structured company profile. Tolerates partial search failures (a failed
+  query is skipped; the run only errors if all three fail) and treats scraping as best-effort.
+  All external text is firewalled against prompt injection before it reaches the prompt:
+  search results carrying injection signatures are redacted and scraped content is blocked
+  (POST /runs also rejects injected user input up front).
 - **Analyst** — scores ICP fit (0–1, clamped), extracts personalization hooks, recommends
   a tone, and flags reasons not to reach out, given the research and the ICP notes.
 - **Drafter** — writes a ≤200-word personalized email using the analyst's hooks, with the

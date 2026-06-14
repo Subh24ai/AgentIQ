@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 from pydantic import BaseModel, Field
@@ -12,8 +13,6 @@ from backend.security.injection_guard import PromptInjectionGuard
 from backend.tools.search import TavilySearchTool, PlaywrightScraper
 
 logger = logging.getLogger("agentiq.researcher")
-
-_MAX_RETRIES = 3
 
 _SYSTEM = (
     "You are a B2B sales researcher. Synthesize the provided search results and "
@@ -31,22 +30,6 @@ class ResearchOutput(BaseModel):
     pain_points: list[str] = Field(default_factory=list)
 
 
-async def _search_with_backoff(tool: TavilySearchTool, queries: list[str]) -> list[list[dict]]:
-    """Run all queries in parallel with exponential backoff on failure."""
-
-    last_exc: Exception | None = None
-    for attempt in range(_MAX_RETRIES):
-        try:
-            return await asyncio.gather(*(tool.search(q) for q in queries))
-        except Exception as exc:  # Tavily API / network errors
-            last_exc = exc
-            wait = 2 ** attempt
-            logger.warning("tavily search failed (attempt %d), backing off %ds: %s",
-                           attempt + 1, wait, exc)
-            await asyncio.sleep(wait)
-    raise last_exc if last_exc else RuntimeError("search failed")
-
-
 async def researcher_node(state: dict) -> dict:
     try:
         await emit_node_event(state, "researcher", "active")
@@ -60,22 +43,55 @@ async def researcher_node(state: dict) -> dict:
             f"{company} tech stack engineering blog",
         ]
         tool = TavilySearchTool()
-        search_results = await _search_with_backoff(tool, queries)
 
-        # The scraper already firewalls site text (returns BLOCKED_CONTENT on a
-        # hit, see tools/search.py), so scraped content is guarded before it ever
-        # reaches this prompt.
-        scraper = PlaywrightScraper()
-        site_text = await scraper.scrape(website) if website else ""
+        # Run all queries in parallel and tolerate per-query failures: one bad
+        # query must not sink the whole research step. Failed queries contribute
+        # no results; we proceed with whatever came back.
+        raw_results = await asyncio.gather(
+            *(tool.search(q) for q in queries), return_exceptions=True
+        )
+        results: list[list[dict]] = []
+        failures = 0
+        for i, r in enumerate(raw_results):
+            if isinstance(r, Exception):
+                failures += 1
+                logger.warning(
+                    json.dumps(
+                        {
+                            "event": "tavily_partial_failure",
+                            "query_index": i,
+                            "query": queries[i],
+                            "error": str(r),
+                        }
+                    )
+                )
+                results.append([])  # empty result for failed query
+            else:
+                results.append(r)
+        all_results = [item for sublist in results for item in sublist]
 
-        flat = [item for group in search_results for item in group]
+        # Only a hard failure if EVERY query raised. A successful-but-empty
+        # search (no hits) is not a failure — proceed with what we have.
+        if failures == len(queries):
+            state["error"] = "researcher failed: all search queries failed"
+            return state
+
+        # Scrape is best-effort. The scraper already firewalls site text (returns
+        # BLOCKED_CONTENT on a hit, see tools/search.py); a scrape failure here is
+        # non-fatal — log it and continue without site text.
+        try:
+            scraper = PlaywrightScraper()
+            site_text = await scraper.scrape(website) if website else ""
+        except Exception as exc:
+            logger.warning("scraper failed, continuing without site text: %s", exc)
+            site_text = ""
 
         # OWASP LLM01/02: Tavily results are external/untrusted. Scan each result
         # and redact (rather than drop) any content carrying injection signatures
         # before it is joined into the LLM prompt.
         guard = PromptInjectionGuard()
         safe_results = []
-        for r in flat:
+        for r in all_results:
             content = r.get("content", "")
             scan = guard.scan(content)
             if scan.is_safe:
