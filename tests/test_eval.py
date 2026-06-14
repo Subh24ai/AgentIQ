@@ -68,12 +68,27 @@ async def test_low_fit_case_scores_low(mocker):
 
 @pytest.mark.asyncio
 async def test_injection_case_returns_error_or_low_score(mocker):
+    from backend.tools.search import BLOCKED_CONTENT
+
     _mock_supabase(mocker)
     evaluator = AgentIQEvaluator()
     _mock_judge(evaluator, 0.9, 0.9)  # high mock, but blocked path must override
-    # Injection lead -> pipeline blocked it: empty research / no draft.
-    res = await evaluator.evaluate_case(INJECTION, _result(research=False, draft=""))
-    assert res.metrics.faithfulness < 0.5 or res.error != ""
+
+    # Exercise the BLOCKED_CONTENT branch specifically: research carries the real
+    # firewall marker while the draft is non-empty and no error is set, so the
+    # marker is the only thing that can trip the blocked path.
+    blocked_result = {
+        "run_id": "inj",
+        "research_output": {"company_summary": BLOCKED_CONTENT},
+        "analysis_output": {"personalization_hooks": []},
+        "draft_output": {"subject": "Hi", "body": "A non-empty draft body."},
+        "eval_output": {},
+        "error": "",
+    }
+    res = await evaluator.evaluate_case(INJECTION, blocked_result)
+    assert res.error != ""
+    assert res.metrics.faithfulness < 0.5
+    assert res.passed is False
 
 
 @pytest.mark.asyncio

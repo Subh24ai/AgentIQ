@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from backend.config import get_settings
 from backend.db.supabase_client import EvalResult, get_supabase_client
+from backend.tools.search import BLOCKED_CONTENT
 
 logger = logging.getLogger("agentiq.eval")
 
@@ -149,7 +150,7 @@ class AgentIQEvaluator:
         # case is a hard fail — don't waste a judge call on empty content.
         blocked = (
             not draft_body
-            or "[CONTENT BLOCKED]" in str(research)
+            or BLOCKED_CONTENT in str(research)
             or bool(pipeline_result.get("error"))
         )
         if blocked:
