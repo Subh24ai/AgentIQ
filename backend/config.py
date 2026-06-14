@@ -5,8 +5,9 @@ from __future__ import annotations
 import time
 from collections import OrderedDict
 from functools import lru_cache
-from typing import Callable
+from typing import Callable, ClassVar
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,6 +20,10 @@ class Settings(BaseSettings):
         extra="ignore",
         case_sensitive=False,
     )
+
+    # The placeholder secret shipped in .env.example. The server refuses to
+    # start with this value (outside APP_ENV=test).
+    DEFAULT_SECRET: ClassVar[str] = "changeme_min32chars_replace_this"
 
     # --- LLM / tooling ---
     anthropic_api_key: str = ""
@@ -34,7 +39,7 @@ class Settings(BaseSettings):
 
     # --- Infra ---
     redis_url: str = "redis://localhost:6379"
-    jwt_secret: str = "changeme_min32chars_replace_this"
+    jwt_secret: str = DEFAULT_SECRET
 
     # --- Behaviour toggles ---
     use_mock_gmail: bool = True
@@ -42,6 +47,22 @@ class Settings(BaseSettings):
     # --- Cost controls ---
     cost_limit_usd: float = 0.50
     default_model: str = "claude-sonnet-4-6"
+
+    @model_validator(mode="after")
+    def validate_jwt_secret(self) -> "Settings":
+        """Refuse to start with the placeholder JWT secret outside tests."""
+
+        import os
+
+        env = os.getenv("APP_ENV", "development")
+        if self.jwt_secret == self.DEFAULT_SECRET and env != "test":
+            raise ValueError(
+                "JWT_SECRET must be changed from the default value. "
+                "Set a strong random secret in your .env file. "
+                'Generate one with: python3 -c "import secrets; '
+                'print(secrets.token_hex(32))"'
+            )
+        return self
 
     @property
     def cost_per_1k_tokens(self) -> dict[str, dict[str, float]]:

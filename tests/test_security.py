@@ -143,3 +143,15 @@ async def test_researcher_redacts_injected_tavily_content(mocker):
 
     assert "[CONTENT REDACTED" in captured["human"]
     assert "ignore previous instructions" not in captured["human"]
+
+
+# --- startup hardening: reject the default JWT secret -----------------------
+def test_settings_rejects_default_jwt_secret_in_non_test_env(monkeypatch):
+    from pydantic import ValidationError
+
+    from backend.config import Settings
+
+    # Outside APP_ENV=test, the placeholder secret must be refused.
+    monkeypatch.setenv("APP_ENV", "production")
+    with pytest.raises(ValidationError):
+        Settings(jwt_secret=Settings.DEFAULT_SECRET)

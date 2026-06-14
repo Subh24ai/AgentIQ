@@ -31,8 +31,9 @@ ALLOWED_ORIGINS = ["http://localhost:5173"]
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    get_settings()  # surface misconfiguration early
+    get_settings()  # surface misconfiguration early (validates JWT_SECRET)
     logger.info(json.dumps({"event": "startup", "version": VERSION}))
+    logger.info(json.dumps({"event": "startup_validated", "jwt_secret_set": True}))
     yield
 
 

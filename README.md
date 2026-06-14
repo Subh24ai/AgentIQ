@@ -77,7 +77,7 @@ cd frontend && npm install && npm run dev       # http://localhost:5173
 ## Running tests
 
 ```bash
-pytest --tb=short -v        # 58 tests; all external services are mocked
+pytest --tb=short -v        # 59 tests; all external services are mocked
 ```
 
 CI (`.github/workflows/ci.yml`) runs the full suite on Python 3.11 with a Redis
