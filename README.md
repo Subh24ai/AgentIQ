@@ -23,11 +23,12 @@ graph TD
 
     E -->|quality check| GATE{Eval gate<br/>score ≥ 0.75?}
     GATE -->|pass| CG[Cost Guard<br/>abort if cost_usd > 0.50]
-    CG -->|within budget| RES([Ticket resolved<br/>email sent · SSE complete])
+    CG -->|within budget| RES([Run complete<br/>SSE complete])
 
     GATE -->|fail| HITL{HITL gate<br/>LangGraph interrupt}
-    HITL -->|approved · Command resume| D
-    HITL -->|rejected| STOP([Run ended<br/>no email sent])
+    HITL -->|approved · Command resume| SEND[Gmail Send<br/>send email · log outreach]
+    SEND --> SENT([Email sent<br/>SSE complete])
+    HITL -->|rejected · request revision| D
 
     B -.->|emit events| REDIS([Redis<br/>live status · SSE stream])
     E -.->|persist runs · evals| SUPA([Supabase<br/>audit trail])
@@ -76,7 +77,7 @@ cd frontend && npm install && npm run dev       # http://localhost:5173
 ## Running tests
 
 ```bash
-pytest --tb=short -v        # 47 tests; all external services are mocked
+pytest --tb=short -v        # 57 tests; all external services are mocked
 ```
 
 CI (`.github/workflows/ci.yml`) runs the full suite on Python 3.11 with a Redis
@@ -90,16 +91,21 @@ service and dummy env vars on every push / PR to `main`.
 3. **Watch the stream** on the run page: the 4-step pipeline lights up live, the event
    feed shows agent output, and the cost badge tracks tokens / spend in real time (SSE).
 4. **HITL review**: if the evaluator scores the draft below 0.75, a review panel slides
-   in with the draft (editable body) and the evaluator's feedback. Approve or reject
-   (rejection requires reviewer notes); the graph resumes from the saved checkpoint.
+   in with the draft (editable body) and the evaluator's feedback. **Approve & Send**
+   sends the email and logs the outreach; **Request Revision** (revision notes required)
+   routes the draft back to the drafter for another pass and re-evaluation. The graph
+   resumes from the saved checkpoint, and the revision loop can interrupt for review more
+   than once — each round is streamed to the client.
 5. **Completion**: a summary card shows fit score, eval score, draft subject, pass
-   status, and total cost.
+   status, total cost, and — when the email was sent — the recipient and send time.
 
 ## The agents
 
-- **Researcher** — runs three parallel Tavily searches and scrapes the company website
-  (firewalled against prompt injection), then synthesizes a structured company profile.
-  Implements exponential backoff on search failures.
+- **Researcher** — runs three parallel Tavily searches and scrapes the company website,
+  then synthesizes a structured company profile. Implements exponential backoff on search
+  failures. All external text is firewalled against prompt injection before it reaches the
+  prompt: search results carrying injection signatures are redacted and scraped content is
+  blocked (POST /runs also rejects injected user input up front).
 - **Analyst** — scores ICP fit (0–1, clamped), extracts personalization hooks, recommends
   a tone, and flags reasons not to reach out, given the research and the ICP notes.
 - **Drafter** — writes a ≤200-word personalized email using the analyst's hooks, with the
@@ -111,7 +117,8 @@ service and dummy env vars on every push / PR to `main`.
 
 LangGraph 1.2.5 multi-agent orchestration · HITL interrupt/resume with Redis ·
 LLM-as-judge evaluation · native faithfulness + answer-relevancy eval metrics · Prompt injection firewall
-(OWASP LLM01/02) · Pydantic v2 structured outputs · Prompt caching (Anthropic beta) ·
+across all entry points — user input, search results, scraped content (OWASP LLM01/02) ·
+Pydantic v2 structured outputs · Prompt caching (Anthropic beta) ·
 SSE streaming · JWT auth · FastAPI 0.136.x · Supabase · Docker Compose ·
 GitHub Actions CI
 

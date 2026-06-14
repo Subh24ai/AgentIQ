@@ -8,6 +8,7 @@ import logging
 from pydantic import BaseModel, Field
 
 from backend.agents._common import emit_node_event, get_chat_model, run_structured
+from backend.security.injection_guard import PromptInjectionGuard
 from backend.tools.search import TavilySearchTool, PlaywrightScraper
 
 logger = logging.getLogger("agentiq.researcher")
@@ -61,12 +62,36 @@ async def researcher_node(state: dict) -> dict:
         tool = TavilySearchTool()
         search_results = await _search_with_backoff(tool, queries)
 
+        # The scraper already firewalls site text (returns BLOCKED_CONTENT on a
+        # hit, see tools/search.py), so scraped content is guarded before it ever
+        # reaches this prompt.
         scraper = PlaywrightScraper()
         site_text = await scraper.scrape(website) if website else ""
 
         flat = [item for group in search_results for item in group]
+
+        # OWASP LLM01/02: Tavily results are external/untrusted. Scan each result
+        # and redact (rather than drop) any content carrying injection signatures
+        # before it is joined into the LLM prompt.
+        guard = PromptInjectionGuard()
+        safe_results = []
+        for r in flat:
+            content = r.get("content", "")
+            scan = guard.scan(content)
+            if scan.is_safe:
+                safe_results.append(r)
+            else:
+                logger.warning(
+                    "redacting injected tavily content from %s: patterns=%s",
+                    r.get("url", ""),
+                    scan.matched_patterns,
+                )
+                safe_results.append(
+                    {**r, "content": "[CONTENT REDACTED: injection pattern detected]"}
+                )
+
         context = "\n\n".join(
-            f"- {r['title']} ({r['url']}): {r['content']}" for r in flat
+            f"- {r['title']} ({r['url']}): {r['content']}" for r in safe_results
         )
         human = (
             f"Company: {company}\nWebsite: {website}\n\n"

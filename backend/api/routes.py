@@ -30,6 +30,7 @@ from backend.db.supabase_client import (
     get_supabase_client,
 )
 from backend.security.auth import ALGORITHM, require_role, verify_token
+from backend.security.injection_guard import PromptInjectionGuard
 
 logger = logging.getLogger("agentiq.routes")
 
@@ -118,6 +119,24 @@ async def create_run(
     background: BackgroundTasks,
     claims: dict = Depends(verify_token),
 ) -> dict[str, str]:
+    # OWASP LLM01: firewall direct user input before it enters the pipeline.
+    guard = PromptInjectionGuard()
+    for field_name, field_value in [
+        ("company_name", body.company_name),
+        ("icp_notes", body.icp_notes),
+    ]:
+        scan = guard.scan(field_value)
+        if not scan.is_safe:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "Input rejected: potential prompt injection",
+                    "field": field_name,
+                    "matched_patterns": scan.matched_patterns,
+                    "risk_score": scan.risk_score,
+                },
+            )
+
     run_id = str(uuid.uuid4())
     lead = {
         "company_name": body.company_name,
