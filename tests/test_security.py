@@ -155,3 +155,16 @@ def test_settings_rejects_default_jwt_secret_in_non_test_env(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
     with pytest.raises(ValidationError):
         Settings(jwt_secret=Settings.DEFAULT_SECRET)
+
+
+# --- rate limiter: bounded per-IP table -------------------------------------
+def test_rate_limiter_evicts_oldest_ip_at_max_capacity():
+    from backend.api.middleware import RateLimitMiddleware
+
+    limiter = RateLimitMiddleware(app=None, max_tracked_ips=3)
+    for ip in ["1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4"]:
+        limiter._check(ip)
+
+    assert len(limiter._hits) == 3  # capped; oldest evicted
+    assert "1.1.1.1" not in limiter._hits  # the oldest IP was evicted
+    assert "4.4.4.4" in limiter._hits  # the newest IP is retained
