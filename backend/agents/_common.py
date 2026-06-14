@@ -57,13 +57,23 @@ def get_chat_model(
     return ChatAnthropic(**kwargs)
 
 
-def accumulate_usage(state: dict, usage_metadata: Optional[dict]) -> None:
+def is_over_budget(state: dict) -> bool:
+    """True when cumulative cost has exceeded the configured per-run limit."""
+
+    cost = (state.get("token_usage") or {}).get("cost_usd", 0.0)
+    return cost > get_settings().cost_limit_usd
+
+
+def accumulate_usage(
+    state: dict, usage_metadata: Optional[dict], response: Any = None
+) -> None:
     """Fold a response's ``usage_metadata`` into cumulative ``state['token_usage']``.
 
     Uses the real ``UsageMetadata`` keys (``input_tokens``/``output_tokens``/
     ``total_tokens`` and nested ``input_token_details`` for cache hits) — these
     are the keys langchain-anthropic actually returns. Cache reads are billed at
-    ~10% of the input rate.
+    ~10% of the input rate. Pricing uses the *actual* model from the response
+    metadata when available, falling back to the configured default.
     """
 
     if not usage_metadata:
@@ -75,7 +85,19 @@ def accumulate_usage(state: dict, usage_metadata: Optional[dict]) -> None:
     cache_read = int(details.get("cache_read", 0) or 0)
     cache_creation = int(details.get("cache_creation", 0) or 0)
 
-    rates = settings.cost_per_1k_tokens.get(settings.default_model, {})
+    # Read the actual model from response metadata, falling back to default.
+    actual_model = settings.default_model
+    if response is not None:
+        meta = getattr(response, "response_metadata", None) or {}
+        actual_model = meta.get("model") or settings.default_model
+    # Normalize version suffixes, e.g. "claude-sonnet-4-6-20251001" ->
+    # "claude-sonnet-4-6", so the rate table matches.
+    for known_model in settings.cost_per_1k_tokens:
+        if actual_model.startswith(known_model):
+            actual_model = known_model
+            break
+
+    rates = settings.cost_per_1k_tokens.get(actual_model, {})
     cost = (input_tok / 1000.0) * rates.get("input", 0.0) + (
         output_tok / 1000.0
     ) * rates.get("output", 0.0)
@@ -133,7 +155,7 @@ async def run_structured(
     )
     raw = result.get("raw")
     if raw is not None:
-        accumulate_usage(state, getattr(raw, "usage_metadata", None))
+        accumulate_usage(state, getattr(raw, "usage_metadata", None), response=raw)
     parsed = result.get("parsed")
     if parsed is None:
         raise ValueError("structured output returned no parsed result")

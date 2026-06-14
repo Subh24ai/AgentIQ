@@ -16,6 +16,53 @@ def _state(**lead) -> dict:
     return new_state(run_id="run-test", lead=lead or {"company_name": "Acme", "website": "https://x.io", "icp_notes": "B2B SaaS"})
 
 
+def _over_budget_state() -> dict:
+    state = _state()
+    state["token_usage"]["cost_usd"] = 1.0  # over the 0.50 default limit
+    return state
+
+
+# --- per-node budget guard (inline cost check) ------------------------------
+@pytest.mark.asyncio
+async def test_researcher_exits_early_if_over_budget(mocker):
+    tavily = mocker.patch("backend.agents.researcher.TavilySearchTool")
+    rs_mock = mocker.patch("backend.agents.researcher.run_structured", AsyncMock())
+    state = await researcher_node(_over_budget_state())
+    assert "Cost limit" in state["error"]
+    tavily.assert_not_called()  # no Tavily call was made
+    rs_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_analyst_exits_early_if_over_budget(mocker):
+    gcm = mocker.patch("backend.agents.analyst.get_chat_model")
+    rs_mock = mocker.patch("backend.agents.analyst.run_structured", AsyncMock())
+    state = await analyst_node(_over_budget_state())
+    assert "Cost limit" in state["error"]
+    gcm.assert_not_called()
+    rs_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_drafter_exits_early_if_over_budget(mocker):
+    gcm = mocker.patch("backend.agents.drafter.get_chat_model")
+    rs_mock = mocker.patch("backend.agents.drafter.run_structured", AsyncMock())
+    state = await drafter_node(_over_budget_state())
+    assert "Cost limit" in state["error"]
+    gcm.assert_not_called()
+    rs_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_evaluator_exits_early_if_over_budget(mocker):
+    gcm = mocker.patch("backend.agents.evaluator.get_chat_model")
+    rs_mock = mocker.patch("backend.agents.evaluator.run_structured", AsyncMock())
+    state = await evaluator_node(_over_budget_state())
+    assert "Cost limit" in state["error"]
+    gcm.assert_not_called()
+    rs_mock.assert_not_called()
+
+
 # --- researcher -------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_researcher_node_populates_research_output(mocker):

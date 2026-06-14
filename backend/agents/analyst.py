@@ -6,7 +6,13 @@ import logging
 
 from pydantic import BaseModel, Field, field_validator
 
-from backend.agents._common import emit_node_event, get_chat_model, run_structured
+from backend.agents._common import (
+    emit_node_event,
+    get_chat_model,
+    is_over_budget,
+    run_structured,
+)
+from backend.config import get_settings
 
 logger = logging.getLogger("agentiq.analyst")
 
@@ -38,6 +44,9 @@ class AnalysisOutput(BaseModel):
 
 async def analyst_node(state: dict) -> dict:
     try:
+        if is_over_budget(state):
+            state["error"] = f"Cost limit ${get_settings().cost_limit_usd} exceeded"
+            return state
         await emit_node_event(state, "analyst", "active")
         research = state.get("research_output", {})
         icp_notes = state.get("lead", {}).get("icp_notes", "")

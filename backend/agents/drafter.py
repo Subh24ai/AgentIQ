@@ -16,8 +16,10 @@ from backend.agents._common import (
     cached_system,
     emit_node_event,
     get_chat_model,
+    is_over_budget,
     run_structured,
 )
+from backend.config import get_settings
 
 logger = logging.getLogger("agentiq.drafter")
 
@@ -62,6 +64,9 @@ class DraftOutput(BaseModel):
 
 async def drafter_node(state: dict) -> dict:
     try:
+        if is_over_budget(state):
+            state["error"] = f"Cost limit ${get_settings().cost_limit_usd} exceeded"
+            return state
         await emit_node_event(state, "drafter", "active")
         analysis = state.get("analysis_output", {})
         research = state.get("research_output", {})

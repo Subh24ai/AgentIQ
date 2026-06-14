@@ -8,7 +8,13 @@ import logging
 
 from pydantic import BaseModel, Field
 
-from backend.agents._common import emit_node_event, get_chat_model, run_structured
+from backend.agents._common import (
+    emit_node_event,
+    get_chat_model,
+    is_over_budget,
+    run_structured,
+)
+from backend.config import get_settings
 from backend.security.injection_guard import PromptInjectionGuard
 from backend.tools.search import TavilySearchTool, PlaywrightScraper
 
@@ -32,6 +38,9 @@ class ResearchOutput(BaseModel):
 
 async def researcher_node(state: dict) -> dict:
     try:
+        if is_over_budget(state):
+            state["error"] = f"Cost limit ${get_settings().cost_limit_usd} exceeded"
+            return state
         await emit_node_event(state, "researcher", "active")
         lead = state.get("lead", {})
         company = lead.get("company_name", "")

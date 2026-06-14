@@ -11,8 +11,10 @@ from backend.agents._common import (
     cached_system,
     emit_node_event,
     get_chat_model,
+    is_over_budget,
     run_structured,
 )
+from backend.config import get_settings
 from backend.db.supabase_client import EvalResult, get_supabase_client
 
 logger = logging.getLogger("agentiq.evaluator")
@@ -44,6 +46,9 @@ class EvalOutput(BaseModel):
 
 async def evaluator_node(state: dict) -> dict:
     try:
+        if is_over_budget(state):
+            state["error"] = f"Cost limit ${get_settings().cost_limit_usd} exceeded"
+            return state
         await emit_node_event(state, "evaluator", "active")
         draft = state.get("draft_output", {})
         analysis = state.get("analysis_output", {})

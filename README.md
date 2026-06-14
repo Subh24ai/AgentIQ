@@ -7,8 +7,10 @@ orchestrates four Claude agents — Researcher → Analyst → Drafter → Evalu
 research a target company, score ICP fit, draft a personalized cold email, and then
 critique it with an adversarial LLM-as-judge. Drafts that fail the quality bar are
 routed to a human-in-the-loop review gate (LangGraph `interrupt()`/`resume`) before
-anything is sent, while a cost guard aborts runs that exceed a budget. It demonstrates
-production patterns for agent orchestration, streaming, evaluation, and LLM security.
+anything is sent. Cost is enforced inline: every agent node checks the running spend
+before its LLM call and short-circuits to END once the limit is hit (a final cost-guard
+node remains as a backstop). It demonstrates production patterns for agent
+orchestration, streaming, evaluation, and LLM security.
 
 Architecture diagram: See `docs/architecture.png`.
 
@@ -22,7 +24,7 @@ graph TD
     D -->|draft| E[Evaluator Agent<br/>adversarial LLM-as-judge]
 
     E -->|quality check| GATE{Eval gate<br/>score ≥ 0.75?}
-    GATE -->|pass| CG[Cost Guard<br/>abort if cost_usd > 0.50]
+    GATE -->|pass| CG[Cost Guard backstop<br/>per-node inline checks abort if cost_usd > 0.50]
     CG -->|within budget| RES([Run complete<br/>SSE complete])
 
     GATE -->|fail| HITL{HITL gate<br/>LangGraph interrupt}
@@ -77,7 +79,7 @@ cd frontend && npm install && npm run dev       # http://localhost:5173
 ## Running tests
 
 ```bash
-pytest --tb=short -v        # 63 tests; all external services are mocked
+pytest --tb=short -v        # 67 tests; all external services are mocked
 ```
 
 CI (`.github/workflows/ci.yml`) runs the full suite on Python 3.11 with a Redis
