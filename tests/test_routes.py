@@ -100,6 +100,51 @@ async def test_stream_endpoint_returns_event_stream_content_type(mocker):
 
 
 @pytest.mark.asyncio
+async def test_hitl_logs_before_resuming_graph(mocker):
+    """The HITL decision must be persisted BEFORE the graph is resumed, so a
+    resume failure can never lose the decision."""
+    fake = _fake_supabase(mocker)
+
+    order: list[str] = []
+
+    async def _log(*_a, **_k):
+        order.append("log")
+        return {}
+
+    async def _update(*_a, **_k):
+        order.append("update")
+        return {}
+
+    async def _ainvoke(*_a, **_k):
+        order.append("ainvoke")
+        return {
+            "token_usage": {},
+            "analysis_output": {},
+            "draft_output": {},
+            "eval_output": {},
+            "error": "",
+        }
+
+    fake.log_hitl_review = AsyncMock(side_effect=_log)
+    fake.update_run_status = AsyncMock(side_effect=_update)
+    mocker.patch(
+        "backend.graph.supervisor.agentiq_graph.ainvoke", AsyncMock(side_effect=_ainvoke)
+    )
+
+    async with _client() as c:
+        r = await c.post(
+            "/runs/order-test/hitl",
+            json={"decision": "approved", "feedback": "ok"},
+            headers=REVIEWER,
+        )
+
+    assert r.status_code == 200
+    # Real ordering assertion: the log happened strictly before the resume.
+    assert "log" in order and "ainvoke" in order
+    assert order.index("log") < order.index("ainvoke")
+
+
+@pytest.mark.asyncio
 async def test_second_hitl_round_is_streamed_to_client(mocker):
     """The revision loop interrupts more than once; each round must be streamed."""
     _fake_supabase(mocker)

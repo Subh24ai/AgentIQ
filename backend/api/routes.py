@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import uuid
+from datetime import datetime
 from typing import Any, Literal, Optional
 
 from fastapi import (
@@ -233,29 +234,45 @@ async def submit_hitl(
 
     rs = get_redis_state()
     config = {"configurable": {"thread_id": run_id}}
-    try:
-        result = await agentiq_graph.ainvoke(
-            Command(resume={"decision": body.decision, "feedback": body.feedback}),
-            config=config,
-        )
-    except Exception:
-        logger.exception("failed to resume graph for run %s", run_id)
-        raise HTTPException(status_code=409, detail="Run is not awaiting HITL review")
 
-    await rs.clear_hitl(run_id)
-    # Publish the post-resume outcome so the open SSE stream reaches completion
-    # (or re-prompts for HITL if the revision loop produced another interrupt).
-    await _publish_terminal(run_id, result)
+    # Log the decision FIRST so it is durable even if the resume fails. The
+    # timestamp is taken here (at log time), never from the graph result — that
+    # result may not exist if the resume raises.
+    reviewed_at = datetime.utcnow().isoformat() + "Z"
     try:
         await get_supabase_client().log_hitl_review(
             HITLReview(
                 run_id=run_id,
                 decision=body.decision,
                 reviewer_notes=body.feedback,
+                reviewed_at=reviewed_at,
             )
         )
     except Exception:
         logger.warning("log_hitl_review failed for %s", run_id, exc_info=True)
+
+    # Resume the graph separately. A failure here does not lose the decision
+    # (already logged above); surface that explicitly to the caller.
+    try:
+        result = await agentiq_graph.ainvoke(
+            Command(resume={"decision": body.decision, "feedback": body.feedback}),
+            config=config,
+        )
+    except Exception as e:
+        logger.error(
+            json.dumps(
+                {"event": "hitl_resume_failed", "run_id": run_id, "error": str(e)}
+            )
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Graph resume failed. Decision was logged.",
+        )
+
+    await rs.clear_hitl(run_id)
+    # Publish the post-resume outcome so the open SSE stream reaches completion
+    # (or re-prompts for HITL if the revision loop produced another interrupt).
+    await _publish_terminal(run_id, result)
 
     return {"status": "resumed", "decision": body.decision}
 
