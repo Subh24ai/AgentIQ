@@ -6,6 +6,7 @@ fastapi==0.136.3
 uvicorn[standard]==0.34.3
 pydantic==2.13.4
 pydantic-settings==2.10.1
+email-validator==2.2.0
 supabase==2.31.0
 redis==8.0.0
 python-jose[cryptography]==3.4.0

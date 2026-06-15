@@ -86,7 +86,6 @@ async def test_researcher_node_populates_research_output(mocker):
 async def test_researcher_node_handles_tavily_error_gracefully(mocker):
     tavily = mocker.patch("backend.agents.researcher.TavilySearchTool")
     tavily.return_value.search = AsyncMock(side_effect=RuntimeError("tavily down"))
-    mocker.patch("backend.agents.researcher.asyncio.sleep", AsyncMock())  # no real backoff wait
 
     state = await researcher_node(_state())
     assert "researcher failed" in state["error"]

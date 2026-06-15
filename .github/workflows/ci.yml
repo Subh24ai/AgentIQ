@@ -57,3 +57,15 @@ jobs:
         with:
           name: coverage-report
           path: coverage.xml
+
+  frontend-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: cd frontend && npm ci
+      # Build mode (-b) type-checks the referenced projects. Plain `tsc --noEmit`
+      # is a no-op here because the root tsconfig is solution-style (files: []).
+      - run: cd frontend && npx tsc -b

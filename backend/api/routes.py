@@ -18,7 +18,7 @@ from fastapi import (
     Query,
     status,
 )
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, EmailStr, HttpUrl
 from starlette.responses import JSONResponse, StreamingResponse
 
 from backend.db.redis_state import get_redis_state
@@ -45,7 +45,7 @@ class RunRequest(BaseModel):
     company_name: str
     website: HttpUrl
     icp_notes: str
-    recipient_email: str
+    recipient_email: EmailStr
 
 
 class HITLRequest(BaseModel):
@@ -256,7 +256,7 @@ async def stream_run(
 async def submit_hitl(
     run_id: str,
     body: HITLRequest,
-    claims: dict = Depends(require_role("reviewer")),
+    claims: dict = Depends(require_role("reviewer", "admin")),
 ) -> dict[str, str]:
     from langgraph.types import Command
 
@@ -347,7 +347,10 @@ async def submit_hitl(
 
 @router.get("/runs/{run_id}")
 async def get_run(run_id: str, claims: dict = Depends(verify_token)) -> dict:
-    record = await get_supabase_client().get_run(run_id)
+    try:
+        record = await get_supabase_client().get_run(run_id)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Database unavailable: {e}")
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     return record
@@ -359,5 +362,8 @@ async def list_runs(
     offset: int = Query(default=0, ge=0),
     claims: dict = Depends(verify_token),
 ) -> dict:
-    runs = await get_supabase_client().list_runs(limit=limit, offset=offset)
+    try:
+        runs = await get_supabase_client().list_runs(limit=limit, offset=offset)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Database unavailable: {e}")
     return {"runs": runs, "limit": limit, "offset": offset}

@@ -90,10 +90,35 @@ async def test_get_run_returns_404_for_unknown_id(mocker):
 
 @pytest.mark.asyncio
 async def test_hitl_endpoint_requires_reviewer_role(mocker):
+    """reviewer and admin may approve HITL; any other role is rejected (403)."""
     _fake_supabase(mocker)
+    _mock_redis_pending(mocker)  # run is awaiting review
+    mocker.patch(
+        "backend.graph.supervisor.agentiq_graph.ainvoke",
+        AsyncMock(
+            return_value={
+                "token_usage": {},
+                "analysis_output": {},
+                "draft_output": {},
+                "eval_output": {},
+                "error": "",
+            }
+        ),
+    )
+    guest = {
+        "Authorization": f"Bearer {create_access_token({'sub': 'g', 'role': 'guest'})}"
+    }
     async with _client() as c:
-        r = await c.post("/runs/abc/hitl", json={"decision": "approved", "feedback": "ok"}, headers=ADMIN)
-    assert r.status_code == 403
+        # admin is now permitted to approve HITL (role gate passes -> 200).
+        r_admin = await c.post(
+            "/runs/abc/hitl", json={"decision": "approved", "feedback": "ok"}, headers=ADMIN
+        )
+        # a role that is neither reviewer nor admin is rejected.
+        r_guest = await c.post(
+            "/runs/abc/hitl", json={"decision": "approved", "feedback": "ok"}, headers=guest
+        )
+    assert r_admin.status_code == 200
+    assert r_guest.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -279,6 +304,15 @@ async def test_runs_list_is_paginated(mocker):
 async def test_post_runs_validates_website_is_url(mocker):
     _fake_supabase(mocker)
     bad = {**VALID_BODY, "website": "not-a-url"}
+    async with _client() as c:
+        r = await c.post("/runs", json=bad, headers=ADMIN)
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_post_runs_rejects_invalid_email(mocker):
+    _fake_supabase(mocker)
+    bad = {**VALID_BODY, "recipient_email": "notanemail"}
     async with _client() as c:
         r = await c.post("/runs", json=bad, headers=ADMIN)
     assert r.status_code == 422
