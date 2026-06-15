@@ -2,11 +2,12 @@
 
 Flow:
     START -> researcher -> analyst -> drafter -> evaluator
-    evaluator --(passed)--> cost_guard -> END
+    evaluator --(passed)--> cost_guard --(within budget)--> gmail_send -> END
     evaluator --(failed)--> hitl
     hitl --(approved)--> gmail_send -> END   (draft good enough; send it)
     hitl --(rejected)--> drafter             (needs work; re-draft + re-evaluate)
-Any agent that sets state["error"] short-circuits to END.
+Any agent that sets state["error"] short-circuits to END (including the cost
+guard tripping its budget limit, which routes to END instead of gmail_send).
 """
 
 from __future__ import annotations
@@ -99,7 +100,7 @@ async def hitl_node(state: dict) -> dict:
     """
 
     await get_redis_state().increment_hitl_round(state.get("run_id", ""))
-    decision = interrupt(
+    resume = interrupt(
         {
             "draft": state.get("draft_output", {}),
             "eval_feedback": state.get("eval_output", {}).get("feedback", ""),
@@ -110,9 +111,18 @@ async def hitl_node(state: dict) -> dict:
     # cannot observe a stale HITL payload during resume re-execution and emit a
     # spurious hitl_required event.
     await get_redis_state().clear_hitl(state.get("run_id", ""))
-    # `decision` is the value passed to Command(resume=...).
-    state["hitl_decision"] = decision.get("decision", "pending")
-    state["hitl_feedback"] = decision.get("feedback", "")
+    # `resume` is the value passed to Command(resume=...).
+    decision = resume.get("decision", "pending")
+    feedback = resume.get("feedback", "")
+    edited_body = resume.get("edited_body", "")
+
+    state["hitl_decision"] = decision
+    state["hitl_feedback"] = feedback
+    # If the reviewer approved with an edited body, their version is what gets
+    # sent: overwrite the draft body before gmail_send reads draft_output.
+    # A rejection routes back to the drafter, so the edit is ignored there.
+    if decision == "approved" and edited_body:
+        state["draft_output"] = {**state.get("draft_output", {}), "body": edited_body}
     return state
 
 
@@ -142,6 +152,14 @@ def route_after_hitl(state: dict) -> str:
     return "gmail_send" if state.get("hitl_decision") == "approved" else "drafter"
 
 
+def route_after_cost_guard(state: dict) -> str:
+    # A passing draft within budget is sent. If the cost guard tripped (or any
+    # prior error is set), short-circuit to END instead of sending — preserves
+    # the "error short-circuits to END" invariant so an over-budget run cannot
+    # still send an email.
+    return END if state.get("error") else "gmail_send"
+
+
 # --- graph construction -----------------------------------------------------
 def build_graph() -> StateGraph:
     builder = StateGraph(AgentIQState)
@@ -161,7 +179,7 @@ def build_graph() -> StateGraph:
     builder.add_conditional_edges(
         "evaluator", route_after_evaluator, ["hitl", "cost_guard", END]
     )
-    builder.add_edge("cost_guard", END)
+    builder.add_conditional_edges("cost_guard", route_after_cost_guard, ["gmail_send", END])
     builder.add_conditional_edges("hitl", route_after_hitl, ["gmail_send", "drafter"])
     builder.add_edge("gmail_send", END)
 

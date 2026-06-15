@@ -68,6 +68,23 @@ def test_rejected_hitl_routes_to_drafter():
     assert supervisor.route_after_hitl({"hitl_decision": "rejected"}) == "drafter"
 
 
+# --- cost_guard now sends passing drafts (cost_guard -> gmail_send) ----------
+def test_cost_guard_routes_to_gmail_send_not_end():
+    # A passing draft within budget must be sent, not dead-ended at END.
+    assert supervisor.route_after_cost_guard({"error": ""}) == "gmail_send"
+
+
+def test_cost_guard_routes_to_end_when_error_set():
+    # If the cost guard tripped (error set), short-circuit to END, never send.
+    assert supervisor.route_after_cost_guard({"error": "Cost limit exceeded"}) == END
+
+
+def test_cost_guard_edge_targets_gmail_send():
+    # The compiled graph must contain a cost_guard -> gmail_send edge.
+    edges = {(e.source, e.target) for e in supervisor.agentiq_graph.get_graph().edges}
+    assert ("cost_guard", "gmail_send") in edges
+
+
 @pytest.mark.asyncio
 async def test_gmail_send_node_calls_send_email(mocker):
     client, _ = _mock_send(mocker)
@@ -126,20 +143,67 @@ async def test_run_pipeline_returns_agentiq_state(mocker):
                  AsyncMock(return_value=AnalysisOutput(fit_score=0.8)))
     mocker.patch("backend.agents.drafter.run_structured",
                  AsyncMock(return_value=DraftOutput(subject="Hi", body="Short body.")))
-    # score >= 0.75 -> passed -> cost_guard -> END (no HITL interrupt)
+    # score >= 0.75 -> passed -> cost_guard -> gmail_send -> END (no HITL interrupt)
     mocker.patch("backend.agents.evaluator.run_structured",
                  AsyncMock(return_value=EvalOutput(score=0.9, feedback="good")))
     sb = MagicMock()
     sb.log_eval_result = AsyncMock(return_value={})
     mocker.patch("backend.agents.evaluator.get_supabase_client", return_value=sb)
+    # The passing path now reaches gmail_send; mock the send + outreach log.
+    _mock_send(mocker)
 
     result = await supervisor.run_pipeline(
-        {"company_name": "Acme", "website": "https://x.io", "icp_notes": "B2B SaaS"},
+        {"company_name": "Acme", "website": "https://x.io", "icp_notes": "B2B SaaS",
+         "recipient_email": "founder@acme.com"},
         run_id="run-pipeline-1",
     )
     assert isinstance(result, dict)
     # Expected state keys are present after a full pass.
     for key in ("research_output", "analysis_output", "draft_output", "eval_output"):
         assert key in result
+    assert result["eval_output"]["passed"] is True
+    assert not result.get("error")
+
+
+@pytest.mark.asyncio
+async def test_happy_path_routes_to_gmail_send(mocker):
+    """A passing eval within budget must reach gmail_send and actually send."""
+    tavily = mocker.patch("backend.agents.researcher.TavilySearchTool")
+    tavily.return_value.search = AsyncMock(return_value=[])
+    scraper = mocker.patch("backend.agents.researcher.PlaywrightScraper")
+    scraper.return_value.scrape = AsyncMock(return_value="")
+
+    for mod in ("researcher", "analyst", "drafter", "evaluator"):
+        mocker.patch(f"backend.agents.{mod}.get_chat_model", return_value=MagicMock())
+    mocker.patch("backend.agents.researcher.run_structured",
+                 AsyncMock(return_value=ResearchOutput(company_summary="s")))
+    mocker.patch("backend.agents.analyst.run_structured",
+                 AsyncMock(return_value=AnalysisOutput(fit_score=0.8)))
+    mocker.patch("backend.agents.drafter.run_structured",
+                 AsyncMock(return_value=DraftOutput(subject="Hi", body="Short body.")))
+    # passed=True -> cost_guard -> gmail_send (no HITL).
+    mocker.patch("backend.agents.evaluator.run_structured",
+                 AsyncMock(return_value=EvalOutput(score=0.9, feedback="good")))
+    eval_sb = MagicMock()
+    eval_sb.log_eval_result = AsyncMock(return_value={})
+    mocker.patch("backend.agents.evaluator.get_supabase_client", return_value=eval_sb)
+
+    gmail, _ = _mock_send(mocker)
+
+    result = await supervisor.run_pipeline(
+        {
+            "company_name": "Acme",
+            "website": "https://x.io",
+            "icp_notes": "B2B SaaS",
+            "recipient_email": "founder@acme.com",
+        },
+        run_id="run-happy-send",
+    )
+
+    # The passing draft was sent via gmail_send, not dead-ended at END.
+    gmail.send_email.assert_awaited_once_with(
+        to="founder@acme.com", subject="Hi", body="Short body."
+    )
+    assert result["send_result"]["recipient"] == "founder@acme.com"
     assert result["eval_output"]["passed"] is True
     assert not result.get("error")

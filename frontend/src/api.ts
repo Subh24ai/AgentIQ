@@ -52,7 +52,7 @@ export function streamRun(
   onEvent: (e: AgentEvent) => void,
   onHITL: (p: HITLPayload) => void,
   onComplete: (s: CompletePayload['final_state']) => void,
-  onError?: (err: Error) => void,
+  onError?: (err: string) => void,
 ): () => void {
   const controller = new AbortController()
 
@@ -85,6 +85,12 @@ export function streamRun(
             else if (parsed.event === 'complete') {
               onComplete(parsed.data.final_state)
               return
+            } else if (parsed.event === 'run_error') {
+              onError?.(parsed.data?.error ?? 'Run failed')
+              return
+            } else if (parsed.event === 'timeout') {
+              onError?.('Run timed out after 10 minutes')
+              return
             }
           } catch {
             /* malformed line — skip */
@@ -93,7 +99,7 @@ export function streamRun(
       }
     } catch (err) {
       if ((err as Error).name !== 'AbortError') {
-        onError?.(err as Error)
+        onError?.((err as Error).message)
       }
     }
   })()
@@ -105,6 +111,7 @@ export async function submitHITL(
   runId: string,
   decision: 'approved' | 'rejected',
   feedback: string,
+  editedBody: string,
   token: string,
 ): Promise<{ status: string; decision: string }> {
   const res = await fetch(`${API}/runs/${runId}/hitl`, {
@@ -113,7 +120,7 @@ export async function submitHITL(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ decision, feedback }),
+    body: JSON.stringify({ decision, feedback, edited_body: editedBody }),
   })
   return asJson<{ status: string; decision: string }>(res)
 }

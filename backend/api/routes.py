@@ -19,7 +19,7 @@ from fastapi import (
     status,
 )
 from pydantic import BaseModel, HttpUrl
-from starlette.responses import StreamingResponse
+from starlette.responses import JSONResponse, StreamingResponse
 
 from backend.db.redis_state import get_redis_state
 from backend.db.supabase_client import (
@@ -51,6 +51,7 @@ class RunRequest(BaseModel):
 class HITLRequest(BaseModel):
     decision: Literal["approved", "rejected"]
     feedback: str = ""
+    edited_body: str = ""  # reviewer's edited email body; empty = use original
 
 
 # --- background execution ---------------------------------------------------
@@ -104,11 +105,27 @@ async def _execute_run(run_id: str, lead: dict) -> None:
     try:
         result = await run_pipeline(lead, run_id)
         await _publish_terminal(run_id, result)
-    except Exception:
+    except Exception as e:
         logger.exception("background run %s failed", run_id)
+        # Emit a DISTINCT error terminal event (not a "complete") so the SSE
+        # stream and the UI can tell a crash apart from a successful run. The
+        # failed node is the last node we recorded a status for, if any.
+        failed_node = await rs.get_node_status(run_id) or "unknown"
         await rs.append_event(
-            run_id, {"node": RUN_COMPLETE_NODE, "status": "error", "partial_output": {}}
+            run_id,
+            {
+                "type": "run_error",
+                "status": "error",
+                "error": str(e),
+                "failed_node": failed_node,
+            },
         )
+        try:
+            await get_supabase_client().update_run_status(
+                RunStatusUpdate(run_id=run_id, status="failed")
+            )
+        except Exception:
+            logger.warning("update_run_status(failed) failed for %s", run_id, exc_info=True)
 
 
 # --- endpoints --------------------------------------------------------------
@@ -183,6 +200,17 @@ async def stream_run(
                             {"run_id": run_id, "final_state": event.get("partial_output", {})},
                         )
                         return
+                    if event.get("type") == "run_error":
+                        # Distinct error termination — emit and close the stream.
+                        yield _sse(
+                            "run_error",
+                            {
+                                "run_id": run_id,
+                                "error": event.get("error", "Run failed"),
+                                "node": event.get("failed_node", "unknown"),
+                            },
+                        )
+                        return
                     yield _sse("update", event)
 
                 # The revision loop can interrupt multiple times. The round
@@ -237,6 +265,21 @@ async def submit_hitl(
     rs = get_redis_state()
     config = {"configurable": {"thread_id": run_id}}
 
+    # State guard + idempotency: only a run that is currently awaiting HITL
+    # review can be resumed. Without this, a second submit (or a submit on a
+    # run that never interrupted / already completed) would re-invoke the graph
+    # on a finished thread. The pending payload is set on interrupt and cleared
+    # on resume, so its absence means "not awaiting review".
+    pending = await rs.get_hitl_pending(run_id)
+    if not pending:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "Run is not currently awaiting HITL review",
+                "run_id": run_id,
+            },
+        )
+
     # Log the decision FIRST so it is durable even if the resume fails. The
     # timestamp is taken here (at log time), never from the graph result — that
     # result may not exist if the resume raises.
@@ -257,10 +300,33 @@ async def submit_hitl(
     # (already logged above); surface that explicitly to the caller.
     try:
         result = await agentiq_graph.ainvoke(
-            Command(resume={"decision": body.decision, "feedback": body.feedback}),
+            Command(
+                resume={
+                    "decision": body.decision,
+                    "feedback": body.feedback,
+                    "edited_body": body.edited_body,
+                }
+            ),
             config=config,
         )
+    except ValueError as e:
+        # LangGraph raises ValueError when resuming a thread that is no longer
+        # interrupted (e.g. a race that slipped past the pending check). Clear
+        # the pending marker so the run cannot get stuck, and report a conflict.
+        await rs.clear_hitl(run_id)
+        logger.error(
+            json.dumps(
+                {"event": "hitl_resume_failed", "run_id": run_id, "error": str(e)}
+            )
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=f"Graph resume failed — run may no longer be interrupted: {e}",
+        )
     except Exception as e:
+        # Any other failure: clear the pending marker to avoid stuck state and
+        # surface a 500. The decision was already logged above.
+        await rs.clear_hitl(run_id)
         logger.error(
             json.dumps(
                 {"event": "hitl_resume_failed", "run_id": run_id, "error": str(e)}
@@ -268,7 +334,7 @@ async def submit_hitl(
         )
         raise HTTPException(
             status_code=500,
-            detail="Graph resume failed. Decision was logged.",
+            detail=f"Graph resume failed: {e}",
         )
 
     await rs.clear_hitl(run_id)

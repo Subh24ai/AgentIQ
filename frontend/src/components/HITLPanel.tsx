@@ -26,7 +26,10 @@ export default function HITLPanel({ payload, runId, token, onResolved }: Props):
     setBusy(true)
     try {
       const feedback = decision === 'rejected' ? notes : notes || 'Approved as drafted.'
-      await submitHITL(runId, decision, feedback, token)
+      // On approve, the (possibly edited) body is what gets sent. A rejection
+      // routes back to the drafter, so no edited body is sent.
+      const editedBody = decision === 'approved' ? body : ''
+      await submitHITL(runId, decision, feedback, editedBody, token)
       setDone('Decision submitted')
       onResolved(decision)
     } catch (err) {

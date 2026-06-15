@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { JSX } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { streamRun } from '../api'
@@ -33,6 +33,8 @@ export default function RunPage(): JSX.Element {
   const { agentEvents, hitlPayload, finalState, tokenUsage } = useStore()
   const { resetStore, setRunId, appendEvent, setHITL, setFinal } = useStore()
 
+  const [runError, setRunError] = useState<string | null>(null)
+
   const token = getToken()
 
   useEffect(() => {
@@ -41,6 +43,7 @@ export default function RunPage(): JSX.Element {
       return
     }
     resetStore()
+    setRunError(null)
     setRunId(runId)
     cleanupRef.current = streamRun(
       runId,
@@ -48,6 +51,7 @@ export default function RunPage(): JSX.Element {
       appendEvent,
       setHITL,
       (finalState) => setFinal({ run_id: runId, final_state: finalState }),
+      setRunError,
     )
     return () => {
       cleanupRef.current()
@@ -90,6 +94,8 @@ export default function RunPage(): JSX.Element {
       <main className="content run-layout">
         <section className="run-main">
           <h1>Run {runId.slice(0, 8)}…</h1>
+
+          {runError && <div className="error-banner">Run failed: {runError}</div>}
 
           <div className="pipeline">
             {PIPELINE_NODES.map((node, i) => (

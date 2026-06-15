@@ -31,6 +31,32 @@ def _fake_supabase(mocker, **methods):
     return fake
 
 
+_NO_PENDING = object()  # sentinel so callers can pass pending=None explicitly
+
+
+def _mock_redis_pending(mocker, pending=_NO_PENDING):
+    """Patch routes.get_redis_state so submit_hitl's pending check is controlled.
+
+    Default: a non-empty payload (run is awaiting review). Pass pending=None to
+    simulate a run that is not interrupted, or a side_effect list for sequences.
+    """
+    if pending is _NO_PENDING:
+        pending = {"draft": {"subject": "s", "body": "b"}, "eval_feedback": "x"}
+    rs = MagicMock()
+    if isinstance(pending, list):
+        rs.get_hitl_pending = AsyncMock(side_effect=pending)
+    else:
+        rs.get_hitl_pending = AsyncMock(return_value=pending)
+    rs.clear_hitl = AsyncMock(return_value=None)
+    rs.append_event = AsyncMock(return_value=None)
+    rs.set_node_status = AsyncMock(return_value=None)
+    rs.set_hitl_pending = AsyncMock(return_value=None)
+    rs.get_hitl_round = AsyncMock(return_value=0)
+    rs.increment_hitl_round = AsyncMock(return_value=0)
+    mocker.patch("backend.api.routes.get_redis_state", return_value=rs)
+    return rs
+
+
 @pytest.mark.asyncio
 async def test_post_runs_requires_auth(mocker):
     _fake_supabase(mocker)
@@ -136,6 +162,7 @@ async def test_hitl_logs_before_resuming_graph(mocker):
     """The HITL decision must be persisted BEFORE the graph is resumed, so a
     resume failure can never lose the decision."""
     fake = _fake_supabase(mocker)
+    _mock_redis_pending(mocker)  # run is awaiting review
 
     order: list[str] = []
 
@@ -255,3 +282,146 @@ async def test_post_runs_validates_website_is_url(mocker):
     async with _client() as c:
         r = await c.post("/runs", json=bad, headers=ADMIN)
     assert r.status_code == 422
+
+
+def _capture_resume(mocker):
+    """Patch the graph resume and capture the Command passed to ainvoke."""
+    captured: dict = {}
+
+    async def _ainvoke(cmd, *_a, **_k):
+        captured["cmd"] = cmd
+        return {
+            "token_usage": {},
+            "analysis_output": {},
+            "draft_output": {},
+            "eval_output": {},
+            "error": "",
+        }
+
+    mocker.patch(
+        "backend.graph.supervisor.agentiq_graph.ainvoke", AsyncMock(side_effect=_ainvoke)
+    )
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_hitl_edited_body_is_passed_to_resume(mocker):
+    """The reviewer's edited body must reach the graph in the resume payload."""
+    _fake_supabase(mocker)
+    _mock_redis_pending(mocker)  # run is awaiting review
+    captured = _capture_resume(mocker)
+
+    async with _client() as c:
+        r = await c.post(
+            "/runs/edit-test/hitl",
+            json={
+                "decision": "approved",
+                "feedback": "",
+                "edited_body": "Custom subject body here",
+            },
+            headers=REVIEWER,
+        )
+
+    assert r.status_code == 200
+    assert captured["cmd"].resume == {
+        "decision": "approved",
+        "feedback": "",
+        "edited_body": "Custom subject body here",
+    }
+
+
+@pytest.mark.asyncio
+async def test_hitl_empty_edited_body_keeps_original_draft(mocker):
+    """Omitting edited_body resumes with an empty string (use the original draft)."""
+    _fake_supabase(mocker)
+    _mock_redis_pending(mocker)  # run is awaiting review
+    captured = _capture_resume(mocker)
+
+    async with _client() as c:
+        r = await c.post(
+            "/runs/empty-edit/hitl",
+            json={"decision": "approved", "feedback": ""},
+            headers=REVIEWER,
+        )
+
+    assert r.status_code == 200
+    assert captured["cmd"].resume["edited_body"] == ""
+
+
+@pytest.mark.asyncio
+async def test_hitl_returns_409_when_run_not_interrupted(mocker):
+    """A run with no pending HITL payload cannot be resumed (409, no ainvoke)."""
+    _fake_supabase(mocker)
+    _mock_redis_pending(mocker, pending=None)  # not awaiting review
+    spy = mocker.patch("backend.graph.supervisor.agentiq_graph.ainvoke", AsyncMock())
+
+    async with _client() as c:
+        r = await c.post(
+            "/runs/not-interrupted/hitl",
+            json={"decision": "approved", "feedback": ""},
+            headers=REVIEWER,
+        )
+
+    assert r.status_code == 409
+    assert "not currently awaiting HITL review" in str(r.json())
+    spy.assert_not_called()  # the graph was never resumed
+
+
+@pytest.mark.asyncio
+async def test_hitl_second_call_returns_409(mocker):
+    """Idempotency: the first resume succeeds; a second submit (pending now
+    cleared) returns 409 instead of re-invoking a finished graph."""
+    _fake_supabase(mocker)
+    # First check sees the pending payload; the second sees None (cleared).
+    _mock_redis_pending(
+        mocker, pending=[{"draft": {}, "eval_feedback": ""}, None]
+    )
+    mocker.patch(
+        "backend.graph.supervisor.agentiq_graph.ainvoke",
+        AsyncMock(
+            return_value={
+                "token_usage": {},
+                "analysis_output": {},
+                "draft_output": {},
+                "eval_output": {},
+                "error": "",
+            }
+        ),
+    )
+
+    async with _client() as c:
+        r1 = await c.post(
+            "/runs/twice/hitl",
+            json={"decision": "approved", "feedback": ""},
+            headers=REVIEWER,
+        )
+        r2 = await c.post(
+            "/runs/twice/hitl",
+            json={"decision": "approved", "feedback": ""},
+            headers=REVIEWER,
+        )
+
+    assert r1.status_code == 200
+    assert r2.status_code == 409
+    assert "not currently awaiting HITL review" in str(r2.json())
+
+
+@pytest.mark.asyncio
+async def test_background_failure_emits_run_error_event(mocker):
+    """A pipeline crash emits a distinct run_error event (not a 'complete')."""
+    _fake_supabase(mocker)
+    mocker.patch(
+        "backend.graph.supervisor.run_pipeline",
+        AsyncMock(side_effect=Exception("Claude API down")),
+    )
+    from backend.api.routes import _execute_run
+    from backend.db.redis_state import get_redis_state
+
+    run_id = "bg-fail-run"
+    await _execute_run(run_id, {"company_name": "Acme"})
+
+    events = await get_redis_state().get_events_since(run_id, 0)
+    errors = [e for e in events if e.get("type") == "run_error"]
+    assert errors, "expected a run_error event in Redis"
+    assert "error" in errors[0]
+    assert "Claude API down" in errors[0]["error"]
