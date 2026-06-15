@@ -1,12 +1,18 @@
 import { useState } from 'react'
 import type { FormEvent, JSX } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { login } from '../api'
 import { setToken } from '../auth'
+import AuthLayout from '../components/AuthLayout'
+import Logo from '../components/Logo'
+import PasswordInput from '../components/PasswordInput'
 
 export default function LoginPage(): JSX.Element {
   const navigate = useNavigate()
-  const [username, setUsername] = useState('admin')
+  const location = useLocation()
+  // Set by RegisterPage on a successful sign-up so we can prefill + confirm.
+  const registered = (location.state as { registered?: string } | null)?.registered ?? ''
+  const [username, setUsername] = useState(registered)
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -29,41 +35,65 @@ export default function LoginPage(): JSX.Element {
   }
 
   return (
-    <div className="auth-shell">
+    <AuthLayout>
       <form className="card auth-card" onSubmit={onSubmit}>
-        <div className="brand">
-          Agent<span className="brand-accent">IQ</span>
+        <div className="auth-lockup">
+          <Logo size={28} />
+          <span className="brand">
+            Agent<span className="brand-accent">IQ</span>
+          </span>
         </div>
-        <p className="muted">Autonomous B2B outreach control plane</p>
+        <p className="auth-subtitle">Welcome back — sign in to your control plane.</p>
 
-        <label className="field">
-          <span>Username</span>
+        {registered && (
+          <div className="auth-alert success">
+            <span aria-hidden>✓</span>
+            <span>Account created for {registered}. Please sign in.</span>
+          </div>
+        )}
+        {error && (
+          <div className="auth-alert error">
+            <span aria-hidden>⚠</span>
+            <span>{error}</span>
+          </div>
+        )}
+
+        <label className="field" htmlFor="login-id">
+          <span>Username or email</span>
           <input
+            id="login-id"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             autoComplete="username"
+            placeholder="you@company.com"
             required
           />
         </label>
 
-        <label className="field">
+        <label className="field" htmlFor="login-pw">
           <span>Password</span>
-          <input
-            type="password"
+          <PasswordInput
+            id="login-pw"
             value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={setPassword}
             autoComplete="current-password"
-            required
+            placeholder="••••••••"
           />
         </label>
-
-        {error && <div className="error-text">{error}</div>}
 
         <button className="btn btn-primary" type="submit" disabled={busy}>
+          {busy && <span className="spinner" aria-hidden />}
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
-        <p className="hint">Dev users: admin / reviewer</p>
+
+        <p className="auth-foot">
+          No account? <Link className="auth-link" to="/register">Create one</Link>
+        </p>
+
+        <div className="dev-note">
+          Demo users: <code>admin</code> / <code>agentiq_admin</code> · <code>reviewer</code> / <code>agentiq_review</code>
+        </div>
       </form>
-    </div>
+    </AuthLayout>
   )
 }

@@ -131,7 +131,7 @@ async def test_run_pipeline_returns_agentiq_state(mocker):
     # Researcher tooling
     tavily = mocker.patch("backend.agents.researcher.TavilySearchTool")
     tavily.return_value.search = AsyncMock(return_value=[])
-    scraper = mocker.patch("backend.agents.researcher.PlaywrightScraper")
+    scraper = mocker.patch("backend.agents.researcher.HttpxScraper")
     scraper.return_value.scrape = AsyncMock(return_value="")
 
     # All chat models + structured calls mocked so no network / no LLM
@@ -170,7 +170,7 @@ async def test_happy_path_routes_to_gmail_send(mocker):
     """A passing eval within budget must reach gmail_send and actually send."""
     tavily = mocker.patch("backend.agents.researcher.TavilySearchTool")
     tavily.return_value.search = AsyncMock(return_value=[])
-    scraper = mocker.patch("backend.agents.researcher.PlaywrightScraper")
+    scraper = mocker.patch("backend.agents.researcher.HttpxScraper")
     scraper.return_value.scrape = AsyncMock(return_value="")
 
     for mod in ("researcher", "analyst", "drafter", "evaluator"):
@@ -207,3 +207,53 @@ async def test_happy_path_routes_to_gmail_send(mocker):
     assert result["send_result"]["recipient"] == "founder@acme.com"
     assert result["eval_output"]["passed"] is True
     assert not result.get("error")
+
+
+# --- revision-count cap on the HITL reject loop -----------------------------
+def _mock_hitl_redis(mocker):
+    rs = MagicMock()
+    rs.increment_hitl_round = AsyncMock(return_value=1)
+    rs.clear_hitl = AsyncMock(return_value=None)
+    mocker.patch("backend.graph.supervisor.get_redis_state", return_value=rs)
+    return rs
+
+
+@pytest.mark.asyncio
+async def test_revision_count_increments_on_hitl_reject(mocker):
+    """Three rejections bump revision_count to 3 and route the graph to END."""
+    _mock_hitl_redis(mocker)
+    # interrupt() returns the reviewer's resume payload — here, a rejection.
+    mocker.patch(
+        "backend.graph.supervisor.interrupt",
+        return_value={"decision": "rejected", "feedback": "no", "edited_body": ""},
+    )
+
+    state = new_state(run_id="rev-reject")
+    assert state["revision_count"] == 0
+
+    # Re-run the hitl node once per reject cycle (drafter -> evaluator -> hitl).
+    for _ in range(3):
+        state = await supervisor.hitl_node(state)
+
+    assert state["revision_count"] == 3
+    # The cap is the FIRST check in the router, so it short-circuits to END...
+    assert supervisor.route_after_hitl(state) == END
+    # ...and the terminal error is set (in the node, so it persists to final state).
+    assert state["error"] == "Max revisions reached (3). Run terminated."
+
+
+@pytest.mark.asyncio
+async def test_revision_count_does_not_increment_on_hitl_approve(mocker):
+    """An approval leaves revision_count at 0 and routes to gmail_send."""
+    _mock_hitl_redis(mocker)
+    mocker.patch(
+        "backend.graph.supervisor.interrupt",
+        return_value={"decision": "approved", "feedback": "", "edited_body": ""},
+    )
+
+    state = new_state(run_id="rev-approve")
+    state = await supervisor.hitl_node(state)
+
+    assert state["revision_count"] == 0
+    assert state["error"] == ""
+    assert supervisor.route_after_hitl(state) == "gmail_send"

@@ -123,7 +123,7 @@ async def test_researcher_redacts_injected_tavily_content(mocker):
             }
         ]
     )
-    scraper = mocker.patch("backend.agents.researcher.PlaywrightScraper")
+    scraper = mocker.patch("backend.agents.researcher.HttpxScraper")
     scraper.return_value.scrape = AsyncMock(return_value="clean site text")
     mocker.patch("backend.agents.researcher.get_chat_model", return_value=MagicMock())
 
@@ -168,3 +168,11 @@ def test_rate_limiter_evicts_oldest_ip_at_max_capacity():
     assert len(limiter._hits) == 3  # capped; oldest evicted
     assert "1.1.1.1" not in limiter._hits  # the oldest IP was evicted
     assert "4.4.4.4" in limiter._hits  # the newest IP is retained
+
+
+# --- dev credentials are hashed, never stored in plaintext ------------------
+def test_password_is_not_stored_as_plaintext():
+    from backend.security.auth import DEV_USERS
+
+    assert DEV_USERS["admin"]["hashed_password"] != "agentiq_admin"
+    assert DEV_USERS["admin"]["hashed_password"].startswith("$2b$")

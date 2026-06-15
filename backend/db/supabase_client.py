@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 from supabase import AsyncClient, acreate_client
 
 from backend.config import get_settings
@@ -57,6 +57,15 @@ class EvalResult(BaseModel):
     score: Optional[float] = None
     feedback: Optional[str] = None
     passed: Optional[bool] = None
+
+
+class UserCreate(BaseModel):
+    """A new registered user. ``hashed_password`` is bcrypt-hashed by the caller
+    (backend.security.auth) — this model never receives a plaintext password."""
+
+    email: EmailStr
+    hashed_password: str
+    role: str = "reviewer"
 
 
 def _now_iso() -> str:
@@ -126,10 +135,28 @@ class SupabaseClient:
         resp = await client.table("eval_results").insert(result.model_dump()).execute()
         return resp.data[0] if resp.data else result.model_dump()
 
+    async def create_user(self, user: UserCreate) -> dict[str, Any]:
+        """Insert a registered user. Email uniqueness is enforced by the DB."""
+
+        client = await self._get_client()
+        payload = user.model_dump()
+        payload["email"] = payload["email"].lower()
+        resp = await client.table("users").insert(payload).execute()
+        return resp.data[0] if resp.data else payload
+
     # --- read paths -------------------------------------------------------
     async def get_run(self, run_id: str) -> Optional[dict[str, Any]]:
         client = await self._get_client()
         resp = await client.table("runs").select("*").eq("id", run_id).execute()
+        return resp.data[0] if resp.data else None
+
+    async def get_user_by_email(self, email: str) -> Optional[dict[str, Any]]:
+        """Look up a registered user by email (case-insensitive), or None."""
+
+        client = await self._get_client()
+        resp = (
+            await client.table("users").select("*").eq("email", email.lower()).execute()
+        )
         return resp.data[0] if resp.data else None
 
     async def list_runs(self, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:

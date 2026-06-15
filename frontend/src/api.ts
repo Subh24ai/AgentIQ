@@ -16,6 +16,19 @@ async function asJson<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>
 }
 
+/** Register a new account (email + password). Returns the created user. */
+export async function register(
+  email: string,
+  password: string,
+): Promise<{ email: string; role: string }> {
+  const res = await fetch(`${API}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  })
+  return asJson<{ email: string; role: string }>(res)
+}
+
 /** Exchange username/password for a JWT (OAuth2 password form). */
 export async function login(username: string, password: string): Promise<string> {
   const body = new URLSearchParams({ username, password })

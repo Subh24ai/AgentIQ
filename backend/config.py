@@ -8,6 +8,9 @@ from typing import ClassVar
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Max number of HITL reject→re-draft cycles before a run is force-terminated.
+MAX_HITL_REVISIONS: int = 3
+
 
 class Settings(BaseSettings):
     """Typed settings for AgentIQ, populated from environment variables / .env."""
@@ -32,8 +35,9 @@ class Settings(BaseSettings):
     supabase_anon_key: str = ""
 
     # --- Observability ---
-    langsmith_api_key: str = ""
-    langsmith_project: str = "agentiq"
+    # LangSmith tracing not wired. To enable: pip install langsmith,
+    # set LANGCHAIN_TRACING_V2=true + LANGCHAIN_API_KEY in .env,
+    # then import langsmith in supervisor.py.
 
     # --- Infra ---
     redis_url: str = "redis://localhost:6379"
@@ -55,10 +59,9 @@ class Settings(BaseSettings):
         env = os.getenv("APP_ENV", "development")
         if self.jwt_secret == self.DEFAULT_SECRET and env != "test":
             raise ValueError(
-                "JWT_SECRET must be changed from the default value. "
-                "Set a strong random secret in your .env file. "
-                'Generate one with: python3 -c "import secrets; '
-                'print(secrets.token_hex(32))"'
+                "JWT_SECRET must be at least 32 characters.\n"
+                'Generate one with: python3 -c "import secrets; print(secrets.token_hex(32))"\n'
+                "Then add it to your .env file."
             )
         return self
 

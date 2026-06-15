@@ -7,7 +7,7 @@ import json
 import logging
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from fastapi import (
@@ -21,7 +21,7 @@ from fastapi import (
 from pydantic import BaseModel, EmailStr, HttpUrl
 from starlette.responses import JSONResponse, StreamingResponse
 
-from backend.db.redis_state import get_redis_state
+from backend.db.redis_state import TTL_SECONDS, get_redis_state
 from backend.db.supabase_client import (
     HITLReview,
     RunCreate,
@@ -280,10 +280,16 @@ async def submit_hitl(
             },
         )
 
+    # The review window is bounded by the Redis TTL. If the age marker is gone,
+    # the window has expired (or the run was never set) — refuse to resume.
+    age = await rs.get_hitl_age_seconds(run_id)
+    if age is None:
+        raise HTTPException(409, "HITL review window has expired or run not found")
+
     # Log the decision FIRST so it is durable even if the resume fails. The
     # timestamp is taken here (at log time), never from the graph result — that
     # result may not exist if the resume raises.
-    reviewed_at = datetime.utcnow().isoformat() + "Z"
+    reviewed_at = datetime.now(timezone.utc).isoformat()
     try:
         await get_supabase_client().log_hitl_review(
             HITLReview(
@@ -343,6 +349,29 @@ async def submit_hitl(
     await _publish_terminal(run_id, result)
 
     return {"status": "resumed", "decision": body.decision}
+
+
+@router.get("/runs/{run_id}/hitl/status")
+async def hitl_status(
+    run_id: str, claims: dict = Depends(verify_token)
+) -> dict[str, Any]:
+    """Report whether a run is awaiting HITL review and how long the window has left.
+
+    ``age_seconds`` is how long ago the review opened; ``expires_in_seconds`` is the
+    remaining time before the Redis TTL drops the pending payload. Both are null
+    once no review is pending (or it has expired).
+    """
+
+    rs = get_redis_state()
+    payload = await rs.get_hitl_pending(run_id)
+    age = await rs.get_hitl_age_seconds(run_id)
+    expires_in = max(0.0, TTL_SECONDS - age) if age is not None else None
+    return {
+        "pending": payload is not None,
+        "age_seconds": age,
+        "expires_in_seconds": expires_in,
+        "payload": payload,
+    }
 
 
 @router.get("/runs/{run_id}")

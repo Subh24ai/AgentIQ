@@ -59,8 +59,9 @@ graph TD
 
 ```bash
 git clone <your-repo-url> && cd AgentIQ
-cp .env.example .env          # fill in ANTHROPIC_API_KEY, TAVILY_API_KEY, SUPABASE_*, etc.
-docker compose up --build     # redis + backend (:8000) + frontend (:3000)
+python3 scripts/generate_env.py   # creates .env with a secure JWT_SECRET
+# then fill in ANTHROPIC_API_KEY, TAVILY_API_KEY, SUPABASE_URL, SUPABASE_ANON_KEY
+docker compose up --build         # redis + backend (:8000) + frontend (:3000)
 ```
 
 Apply the database schema once (Supabase SQL editor or `supabase db push`):
@@ -87,8 +88,11 @@ service and dummy env vars on every push / PR to `main`.
 
 ## Using the app
 
-1. **Sign in** at `/` with a dev user (`admin` / `agentiq_admin`, or `reviewer` /
-   `agentiq_review`). The JWT is stored in `sessionStorage`.
+1. **Register or sign in** at `/`. New users self-register at `/register` (email +
+   password, min 8 chars) — accounts are persisted to the Supabase `users` table with
+   the `reviewer` role and bcrypt-hashed passwords, then you sign in. Two built-in dev
+   users also work offline: `admin` / `agentiq_admin` and `reviewer` / `agentiq_review`.
+   The JWT is stored in `sessionStorage`.
 2. **Create a run** on the dashboard: company name, website, ICP notes, recipient email.
 3. **Watch the stream** on the run page: the 4-step pipeline lights up live, the event
    feed shows agent output, and the cost badge tracks tokens / spend in real time (SSE).

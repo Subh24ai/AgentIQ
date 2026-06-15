@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -23,7 +24,10 @@ from backend.config import get_settings
 
 logger = logging.getLogger("agentiq.redis")
 
-TTL_SECONDS = 24 * 60 * 60
+# 7 days — gives reviewers reasonable time to act.
+# For production, replace MemorySaver with AsyncPostgresSaver so
+# graph state survives server restarts. See supervisor.py TODO.
+TTL_SECONDS = 604800
 
 
 def _now_iso() -> str:
@@ -57,6 +61,10 @@ class RedisStateManager:
     @staticmethod
     def _hitl_round_key(run_id: str) -> str:
         return f"agentiq:run:{run_id}:hitl_round"
+
+    @staticmethod
+    def _hitl_set_at_key(run_id: str) -> str:
+        return f"agentiq:run:{run_id}:hitl_set_at"
 
     async def set_node_status(self, run_id: str, node_name: str) -> None:
         try:
@@ -96,8 +104,21 @@ class RedisStateManager:
         try:
             client = self._get_client()
             await client.set(self._hitl_key(run_id), json.dumps(payload), ex=TTL_SECONDS)
+            # Record when the review window opened so callers can compute its age
+            # (and remaining time) and expire stale reviews. Same 7-day TTL.
+            await client.set(self._hitl_set_at_key(run_id), str(time.time()), ex=TTL_SECONDS)
         except Exception:
             logger.warning("redis set_hitl_pending failed for %s", run_id, exc_info=True)
+
+    async def get_hitl_age_seconds(self, run_id: str) -> float | None:
+        """Returns seconds since HITL was set, or None if key missing."""
+
+        try:
+            raw = await self._get_client().get(self._hitl_set_at_key(run_id))
+            return time.time() - float(raw) if raw else None
+        except Exception:
+            logger.warning("redis get_hitl_age_seconds failed for %s", run_id, exc_info=True)
+            return None
 
     async def get_hitl_pending(self, run_id: str) -> Optional[dict[str, Any]]:
         try:
@@ -109,7 +130,9 @@ class RedisStateManager:
 
     async def clear_hitl(self, run_id: str) -> None:
         try:
-            await self._get_client().delete(self._hitl_key(run_id))
+            await self._get_client().delete(
+                self._hitl_key(run_id), self._hitl_set_at_key(run_id)
+            )
         except Exception:
             logger.warning("redis clear_hitl failed for %s", run_id, exc_info=True)
 

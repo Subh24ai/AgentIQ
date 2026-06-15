@@ -1,9 +1,9 @@
 """Search and scraping tools for the Researcher agent.
 
 - :class:`TavilySearchTool` — thin async wrapper over tavily-python.
-- :class:`PlaywrightScraper` — despite the name, uses httpx (Playwright is too
-  heavy for CI); fetches page text, strips HTML, and runs the result through the
-  prompt-injection firewall before returning it (OWASP LLM02 / indirect injection).
+- :class:`HttpxScraper` — fetches page text, strips HTML, and runs the result
+  through the prompt-injection firewall before returning it (OWASP LLM02 /
+  indirect injection).
 """
 
 from __future__ import annotations
@@ -11,6 +11,9 @@ from __future__ import annotations
 import re
 
 import httpx
+
+# Note: HttpxScraper uses httpx for speed. Replace with Playwright
+# for JS-rendered pages: pip install playwright && playwright install chromium.
 
 from backend.config import get_settings
 from backend.security.injection_guard import PromptInjectionGuard
@@ -49,7 +52,7 @@ class TavilySearchTool:
         ]
 
 
-class PlaywrightScraper:
+class HttpxScraper:
     """Fetch page text via httpx and firewall it before returning."""
 
     def __init__(self, timeout: float = 10.0) -> None:

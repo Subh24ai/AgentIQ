@@ -1,6 +1,6 @@
+# Removed unused: langchain-community, langsmith (not wired in this version)
 langgraph==1.2.5
 langchain-anthropic==1.4.6
-langchain-community==0.4.2
 tavily-python==0.7.26
 fastapi==0.136.3
 uvicorn[standard]==0.34.3
@@ -11,9 +11,9 @@ supabase==2.31.0
 redis==8.0.0
 python-jose[cryptography]==3.4.0
 passlib[bcrypt]==1.7.4
+bcrypt==4.0.1  # pinned: passlib 1.7.4 breaks with bcrypt>=4.1 (raises on backend self-test at import)
 python-multipart==0.0.20
 httpx==0.28.1
 pytest==8.4.1
 pytest-asyncio==1.0.0
 pytest-mock==3.14.1
-langsmith==0.4.1

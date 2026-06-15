@@ -9,7 +9,7 @@ from backend.agents.drafter import DraftOutput, drafter_node
 from backend.agents.evaluator import EvalOutput, evaluator_node
 from backend.agents.researcher import ResearchOutput, researcher_node
 from backend.graph.state import new_state
-from backend.tools.search import BLOCKED_CONTENT, PlaywrightScraper
+from backend.tools.search import BLOCKED_CONTENT, HttpxScraper
 
 
 def _state(**lead) -> dict:
@@ -68,7 +68,7 @@ async def test_evaluator_exits_early_if_over_budget(mocker):
 async def test_researcher_node_populates_research_output(mocker):
     tavily = mocker.patch("backend.agents.researcher.TavilySearchTool")
     tavily.return_value.search = AsyncMock(return_value=[{"title": "t", "url": "u", "content": "c", "score": 0.9}])
-    scraper = mocker.patch("backend.agents.researcher.PlaywrightScraper")
+    scraper = mocker.patch("backend.agents.researcher.HttpxScraper")
     scraper.return_value.scrape = AsyncMock(return_value="site text")
     mocker.patch("backend.agents.researcher.get_chat_model", return_value=MagicMock())
     mocker.patch(
@@ -102,7 +102,7 @@ async def test_researcher_handles_partial_tavily_failure(mocker):
 
     tavily = mocker.patch("backend.agents.researcher.TavilySearchTool")
     tavily.return_value.search = AsyncMock(side_effect=_search)
-    scraper = mocker.patch("backend.agents.researcher.PlaywrightScraper")
+    scraper = mocker.patch("backend.agents.researcher.HttpxScraper")
     scraper.return_value.scrape = AsyncMock(return_value="")
     mocker.patch("backend.agents.researcher.get_chat_model", return_value=MagicMock())
     mocker.patch(
@@ -209,7 +209,7 @@ async def test_evaluator_logs_to_supabase(mocker):
 # --- tools / cost guard -----------------------------------------------------
 @pytest.mark.asyncio
 async def test_injection_guard_blocks_scraped_content(mocker):
-    scraper = PlaywrightScraper()
+    scraper = HttpxScraper()
     mocker.patch.object(
         scraper,
         "_fetch",

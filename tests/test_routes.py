@@ -53,6 +53,8 @@ def _mock_redis_pending(mocker, pending=_NO_PENDING):
     rs.set_hitl_pending = AsyncMock(return_value=None)
     rs.get_hitl_round = AsyncMock(return_value=0)
     rs.increment_hitl_round = AsyncMock(return_value=0)
+    # A live review window by default (age marker present); resume is allowed.
+    rs.get_hitl_age_seconds = AsyncMock(return_value=12.0)
     mocker.patch("backend.api.routes.get_redis_state", return_value=rs)
     return rs
 
@@ -459,3 +461,44 @@ async def test_background_failure_emits_run_error_event(mocker):
     assert errors, "expected a run_error event in Redis"
     assert "error" in errors[0]
     assert "Claude API down" in errors[0]["error"]
+
+
+@pytest.mark.asyncio
+async def test_hitl_status_returns_pending_true_when_hitl_active(mocker):
+    """When a review window is open, status reports pending=True with timing + payload."""
+    from backend.db.redis_state import TTL_SECONDS
+
+    payload = {"draft": {"subject": "s", "body": "b"}, "eval_feedback": "needs work"}
+    rs = MagicMock()
+    rs.get_hitl_pending = AsyncMock(return_value=payload)
+    rs.get_hitl_age_seconds = AsyncMock(return_value=42.0)
+    mocker.patch("backend.api.routes.get_redis_state", return_value=rs)
+
+    async with _client() as c:
+        r = await c.get("/runs/active-run/hitl/status", headers=REVIEWER)
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["pending"] is True
+    assert body["age_seconds"] == 42.0
+    assert body["expires_in_seconds"] == TTL_SECONDS - 42.0
+    assert body["payload"] == payload
+
+
+@pytest.mark.asyncio
+async def test_hitl_status_returns_pending_false_when_no_hitl(mocker):
+    """With no pending review, status reports pending=False and null timing/payload."""
+    rs = MagicMock()
+    rs.get_hitl_pending = AsyncMock(return_value=None)
+    rs.get_hitl_age_seconds = AsyncMock(return_value=None)
+    mocker.patch("backend.api.routes.get_redis_state", return_value=rs)
+
+    async with _client() as c:
+        r = await c.get("/runs/idle-run/hitl/status", headers=REVIEWER)
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["pending"] is False
+    assert body["age_seconds"] is None
+    assert body["expires_in_seconds"] is None
+    assert body["payload"] is None

@@ -23,7 +23,7 @@ from backend.agents.analyst import analyst_node
 from backend.agents.drafter import drafter_node
 from backend.agents.evaluator import evaluator_node
 from backend.agents.researcher import researcher_node
-from backend.config import get_settings
+from backend.config import MAX_HITL_REVISIONS, get_settings
 from backend.db.redis_state import get_redis_state
 from backend.db.supabase_client import OutreachLog, get_supabase_client
 from backend.graph.state import AgentIQState, new_state
@@ -118,6 +118,16 @@ async def hitl_node(state: dict) -> dict:
 
     state["hitl_decision"] = decision
     state["hitl_feedback"] = feedback
+    # A rejection sends the draft back to the drafter for another pass; count it
+    # so the router can cap the revision loop. Approvals leave the count alone.
+    if decision == "rejected":
+        state["revision_count"] = state.get("revision_count", 0) + 1
+        # Set the terminal error HERE (in the node) so it persists into the final
+        # state — a router (conditional-edge) function's mutations are NOT merged
+        # back by LangGraph, only its return value is. route_after_hitl re-checks
+        # the same cap to route to END.
+        if state["revision_count"] >= MAX_HITL_REVISIONS:
+            state["error"] = "Max revisions reached (3). Run terminated."
     # If the reviewer approved with an edited body, their version is what gets
     # sent: overwrite the draft body before gmail_send reads draft_output.
     # A rejection routes back to the drafter, so the edit is ignored there.
@@ -147,6 +157,11 @@ def route_after_evaluator(state: dict) -> str:
 
 
 def route_after_hitl(state: dict) -> str:
+    # Cap the revision loop FIRST: once the reviewer has rejected MAX_HITL_REVISIONS
+    # times, terminate the run instead of re-drafting forever.
+    if state.get("revision_count", 0) >= MAX_HITL_REVISIONS:
+        state["error"] = "Max revisions reached (3). Run terminated."
+        return END
     # approved -> the draft is good enough: send it, then END.
     # rejected -> the draft needs work: re-draft (revision loop) + re-evaluate.
     return "gmail_send" if state.get("hitl_decision") == "approved" else "drafter"
@@ -180,7 +195,7 @@ def build_graph() -> StateGraph:
         "evaluator", route_after_evaluator, ["hitl", "cost_guard", END]
     )
     builder.add_conditional_edges("cost_guard", route_after_cost_guard, ["gmail_send", END])
-    builder.add_conditional_edges("hitl", route_after_hitl, ["gmail_send", "drafter"])
+    builder.add_conditional_edges("hitl", route_after_hitl, ["gmail_send", "drafter", END])
     builder.add_edge("gmail_send", END)
 
     return builder
@@ -189,6 +204,12 @@ def build_graph() -> StateGraph:
 # Compiled graph with an in-memory checkpointer (required to resume after interrupt).
 # NOTE: MemorySaver is process-local and not durable across restarts; swap for
 # AsyncPostgresSaver (Supabase Postgres) in production.
+#
+# KNOWN LIMITATION: MemorySaver stores graph checkpoints in memory only.
+# A server restart loses all in-flight runs, including those awaiting HITL review.
+# For production: replace with AsyncPostgresSaver using your Supabase Postgres URL:
+#   from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+#   checkpointer = AsyncPostgresSaver.from_conn_string(settings.SUPABASE_DB_URL)
 _builder = build_graph()
 agentiq_graph = _builder.compile(checkpointer=MemorySaver(), interrupt_before=[])
 

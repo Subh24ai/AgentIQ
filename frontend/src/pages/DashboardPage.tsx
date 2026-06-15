@@ -3,6 +3,7 @@ import type { FormEvent, JSX } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { createRun } from '../api'
 import { clearToken, getToken } from '../auth'
+import Logo from '../components/Logo'
 import type { Lead } from '../types'
 
 const EMPTY: Lead = { company_name: '', website: '', icp_notes: '', recipient_email: '' }
@@ -44,8 +45,11 @@ export default function DashboardPage(): JSX.Element {
   return (
     <div className="page">
       <header className="topbar">
-        <div className="brand">
-          Agent<span className="brand-accent">IQ</span>
+        <div className="auth-lockup">
+          <Logo size={26} />
+          <span className="brand">
+            Agent<span className="brand-accent">IQ</span>
+          </span>
         </div>
         <button className="btn btn-ghost" onClick={logout}>
           Sign out
@@ -53,11 +57,13 @@ export default function DashboardPage(): JSX.Element {
       </header>
 
       <main className="content narrow">
-        <h1>New outreach run</h1>
-        <p className="muted">
-          The pipeline will research the company, score ICP fit, draft an email, and
-          self-evaluate it before anything is sent.
-        </p>
+        <div className="page-head">
+          <h1>New outreach run</h1>
+          <p className="page-lede">
+            The pipeline will research the company, score ICP fit, draft an email, and
+            self-evaluate it before anything is sent.
+          </p>
+        </div>
 
         <form className="card form" onSubmit={onSubmit}>
           <label className="field">
@@ -103,9 +109,15 @@ export default function DashboardPage(): JSX.Element {
             />
           </label>
 
-          {error && <div className="error-text">{error}</div>}
+          {error && (
+            <div className="auth-alert error">
+              <span aria-hidden>⚠</span>
+              <span>{error}</span>
+            </div>
+          )}
 
           <button className="btn btn-primary" type="submit" disabled={busy}>
+            {busy && <span className="spinner" aria-hidden />}
             {busy ? 'Starting…' : 'Start run'}
           </button>
         </form>

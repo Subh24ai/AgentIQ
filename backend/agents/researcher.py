@@ -16,7 +16,7 @@ from backend.agents._common import (
 )
 from backend.config import get_settings
 from backend.security.injection_guard import PromptInjectionGuard
-from backend.tools.search import TavilySearchTool, PlaywrightScraper
+from backend.tools.search import TavilySearchTool, HttpxScraper
 
 logger = logging.getLogger("agentiq.researcher")
 
@@ -89,7 +89,7 @@ async def researcher_node(state: dict) -> dict:
         # BLOCKED_CONTENT on a hit, see tools/search.py); a scrape failure here is
         # non-fatal — log it and continue without site text.
         try:
-            scraper = PlaywrightScraper()
+            scraper = HttpxScraper()
             site_text = await scraper.scrape(website) if website else ""
         except Exception as exc:
             logger.warning("scraper failed, continuing without site text: %s", exc)
